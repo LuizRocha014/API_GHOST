@@ -11,5 +11,7 @@ internal static class ProductMapping
             product.Sku,
             product.Price,
             product.Stock,
-            product.CreatedAt);
+            product.CreatedAt,
+            product.UpdatedAt,
+            product.Active);
 }

@@ -1,10 +1,12 @@
 using Application.Products;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 namespace Api.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
+[Authorize]
 public sealed class ProductsController : ControllerBase
 {
     private readonly IProductService _productService;

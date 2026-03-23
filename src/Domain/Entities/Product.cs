@@ -1,11 +1,9 @@
 namespace Domain.Entities;
 
-public sealed class Product
+public sealed class Product : Core
 {
-    public Guid Id { get; init; }
-    public string Name { get; init; } = string.Empty;
-    public string Sku { get; init; } = string.Empty;
-    public decimal Price { get; init; }
-    public int Stock { get; init; }
-    public DateTimeOffset CreatedAt { get; init; }
+    public string Name { get; set; } = string.Empty;
+    public string Sku { get; set; } = string.Empty;
+    public decimal Price { get; set; }
+    public int Stock { get; set; }
 }

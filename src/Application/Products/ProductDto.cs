@@ -6,4 +6,6 @@ public sealed record ProductDto(
     string Sku,
     decimal Price,
     int Stock,
-    DateTimeOffset CreatedAt);
+    DateTime CreatedAt,
+    DateTime UpdatedAt,
+    bool Active);

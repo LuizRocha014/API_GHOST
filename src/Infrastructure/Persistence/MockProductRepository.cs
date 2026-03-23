@@ -9,7 +9,7 @@ public sealed class MockProductRepository : IProductRepository
 
     public MockProductRepository()
     {
-        var now = DateTimeOffset.UtcNow;
+        var now = DateTime.UtcNow;
         _store =
         [
             new Product
@@ -19,7 +19,9 @@ public sealed class MockProductRepository : IProductRepository
                 Sku = "NB-PRO-14",
                 Price = 7499.90m,
                 Stock = 12,
-                CreatedAt = now.AddDays(-30)
+                CreatedAt = now.AddDays(-30),
+                UpdatedAt = now.AddDays(-30),
+                Active = true
             },
             new Product
             {
@@ -28,7 +30,9 @@ public sealed class MockProductRepository : IProductRepository
                 Sku = "MS-WL-01",
                 Price = 129.90m,
                 Stock = 200,
-                CreatedAt = now.AddDays(-10)
+                CreatedAt = now.AddDays(-10),
+                UpdatedAt = now.AddDays(-10),
+                Active = true
             },
             new Product
             {
@@ -37,20 +41,22 @@ public sealed class MockProductRepository : IProductRepository
                 Sku = "MN-27-4K",
                 Price = 1899.00m,
                 Stock = 45,
-                CreatedAt = now.AddDays(-5)
+                CreatedAt = now.AddDays(-5),
+                UpdatedAt = now.AddDays(-5),
+                Active = true
             }
         ];
     }
 
     public Task<IReadOnlyList<Product>> GetAllAsync(CancellationToken cancellationToken = default)
     {
-        IReadOnlyList<Product> list = _store.OrderBy(p => p.Name).ToList();
+        IReadOnlyList<Product> list = _store.Where(p => p.Active).OrderBy(p => p.Name).ToList();
         return Task.FromResult(list);
     }
 
     public Task<Product?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
     {
-        var product = _store.FirstOrDefault(p => p.Id == id);
+        var product = _store.FirstOrDefault(p => p.Id == id && p.Active);
         return Task.FromResult(product);
     }
 

@@ -26,6 +26,7 @@ public sealed class ProductService : IProductService
 
     public async Task<ProductDto> CreateAsync(CreateProductRequest request, CancellationToken cancellationToken = default)
     {
+        var utc = DateTime.UtcNow;
         var entity = new Product
         {
             Id = Guid.NewGuid(),
@@ -33,7 +34,9 @@ public sealed class ProductService : IProductService
             Sku = request.Sku.Trim().ToUpperInvariant(),
             Price = request.Price,
             Stock = request.Stock,
-            CreatedAt = DateTimeOffset.UtcNow
+            CreatedAt = utc,
+            UpdatedAt = utc,
+            Active = true
         };
 
         var created = await _repository.AddAsync(entity, cancellationToken);
