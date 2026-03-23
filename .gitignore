@@ -1,0 +1,18 @@
+## .NET
+bin/
+obj/
+out/
+*.user
+*.suo
+*.cache
+.vs/
+*.DotSettings.user
+
+## Rider / VS Code
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+## OS
+Thumbs.db
+.DS_Store
