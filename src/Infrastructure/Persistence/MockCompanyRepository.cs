@@ -14,7 +14,7 @@ public sealed class MockCompanyRepository : ICompanyRepository
         [
             new Company
             {
-                Id = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+                Id = MockSeedIds.CompanyId,
                 Name = "Empresa Demo",
                 Cnpj = "00000000000191",
                 CreatedAt = utc,
@@ -49,6 +49,17 @@ public sealed class MockCompanyRepository : ICompanyRepository
             return Task.FromResult(false);
 
         _store[index] = company;
+        return Task.FromResult(true);
+    }
+
+    public Task<bool> SoftDeleteAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        var c = _store.FirstOrDefault(x => x.Id == id);
+        if (c is null || !c.Active)
+            return Task.FromResult(c is not null);
+
+        c.Active = false;
+        c.UpdatedAt = DateTime.UtcNow;
         return Task.FromResult(true);
     }
 }

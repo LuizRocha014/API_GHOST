@@ -28,6 +28,10 @@ public sealed class UserService : IUserService
 
     public async Task<UserDto> CreateAsync(CreateUserRequest request, CancellationToken cancellationToken = default)
     {
+        var username = request.Username.Trim().ToLowerInvariant();
+        if (await _repository.UsernameExistsAsync(username, null, cancellationToken))
+            throw new InvalidOperationException("Nome de usuário já cadastrado.");
+
         var email = request.Email.Trim().ToLowerInvariant();
         if (await _repository.EmailExistsAsync(email, null, cancellationToken))
             throw new InvalidOperationException("Email já cadastrado.");
@@ -37,6 +41,7 @@ public sealed class UserService : IUserService
         {
             Id = Guid.NewGuid(),
             Name = request.Name.Trim(),
+            Username = username,
             Email = email,
             PasswordHash = _passwordHasher.Hash(request.Password),
             CreatedAt = utc,
@@ -54,11 +59,16 @@ public sealed class UserService : IUserService
         if (user is null)
             return null;
 
+        var username = request.Username.Trim().ToLowerInvariant();
+        if (await _repository.UsernameExistsAsync(username, id, cancellationToken))
+            throw new InvalidOperationException("Nome de usuário já cadastrado.");
+
         var email = request.Email.Trim().ToLowerInvariant();
         if (await _repository.EmailExistsAsync(email, id, cancellationToken))
             throw new InvalidOperationException("Email já cadastrado.");
 
         user.Name = request.Name.Trim();
+        user.Username = username;
         user.Email = email;
         user.Active = request.Active;
         user.UpdatedAt = DateTime.UtcNow;
@@ -69,4 +79,7 @@ public sealed class UserService : IUserService
         var ok = await _repository.UpdateAsync(user, cancellationToken);
         return ok ? user.ToDto() : null;
     }
+
+    public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default) =>
+        _repository.SoftDeleteAsync(id, cancellationToken);
 }

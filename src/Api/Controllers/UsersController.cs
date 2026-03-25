@@ -71,4 +71,16 @@ public sealed class UsersController : ControllerBase
             return Conflict(new { message = ex.Message });
         }
     }
+
+    [HttpDelete("{id:guid}")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
+    {
+        var ok = await _users.DeleteAsync(id, cancellationToken);
+        if (!ok)
+            return NotFound();
+
+        return NoContent();
+    }
 }

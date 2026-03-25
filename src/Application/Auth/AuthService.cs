@@ -24,8 +24,8 @@ public sealed class AuthService : IAuthService
 
     public async Task<LoginResponse?> LoginAsync(LoginRequest request, CancellationToken cancellationToken = default)
     {
-        var email = request.Email.Trim().ToLowerInvariant();
-        var user = await _users.GetByEmailAsync(email, cancellationToken);
+        var username = request.Username.Trim().ToLowerInvariant();
+        var user = await _users.GetByUsernameAsync(username, cancellationToken);
         if (user is null || !user.Active)
             return null;
 
@@ -38,6 +38,7 @@ public sealed class AuthService : IAuthService
             AccessToken = token,
             ExpiresInMinutes = _jwtOptions.ExpiresMinutes,
             UserId = user.Id,
+            Username = user.Username,
             Email = user.Email,
             Name = user.Name
         };

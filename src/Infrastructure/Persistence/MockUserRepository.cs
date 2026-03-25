@@ -14,8 +14,9 @@ public sealed class MockUserRepository : IUserRepository
         [
             new User
             {
-                Id = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                Id = MockSeedIds.UserAdminId,
                 Name = "Administrador",
+                Username = "admin",
                 Email = "admin@example.com",
                 PasswordHash = passwordHasher.Hash("Admin@123"),
                 CreatedAt = utc,
@@ -44,11 +45,26 @@ public sealed class MockUserRepository : IUserRepository
         return Task.FromResult(user);
     }
 
+    public Task<User?> GetByUsernameAsync(string username, CancellationToken cancellationToken = default)
+    {
+        var normalized = username.Trim().ToLowerInvariant();
+        var user = _store.FirstOrDefault(u => u.Username == normalized);
+        return Task.FromResult(user);
+    }
+
     public Task<bool> EmailExistsAsync(string email, Guid? excludeId, CancellationToken cancellationToken = default)
     {
         var normalized = email.Trim().ToLowerInvariant();
         var exists = _store.Any(u =>
             u.Email == normalized && (!excludeId.HasValue || u.Id != excludeId.Value));
+        return Task.FromResult(exists);
+    }
+
+    public Task<bool> UsernameExistsAsync(string username, Guid? excludeId, CancellationToken cancellationToken = default)
+    {
+        var normalized = username.Trim().ToLowerInvariant();
+        var exists = _store.Any(u =>
+            u.Username == normalized && (!excludeId.HasValue || u.Id != excludeId.Value));
         return Task.FromResult(exists);
     }
 
@@ -65,6 +81,17 @@ public sealed class MockUserRepository : IUserRepository
             return Task.FromResult(false);
 
         _store[index] = user;
+        return Task.FromResult(true);
+    }
+
+    public Task<bool> SoftDeleteAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        var u = _store.FirstOrDefault(x => x.Id == id);
+        if (u is null || !u.Active)
+            return Task.FromResult(u is not null);
+
+        u.Active = false;
+        u.UpdatedAt = DateTime.UtcNow;
         return Task.FromResult(true);
     }
 }

@@ -55,4 +55,7 @@ public sealed class CompanyService : ICompanyService
         var ok = await _repository.UpdateAsync(company, cancellationToken);
         return ok ? company.ToDto() : null;
     }
+
+    public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default) =>
+        _repository.SoftDeleteAsync(id, cancellationToken);
 }

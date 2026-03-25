@@ -8,4 +8,5 @@ public interface ICompanyRepository
     Task<Company?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default);
     Task<Company> AddAsync(Company company, CancellationToken cancellationToken = default);
     Task<bool> UpdateAsync(Company company, CancellationToken cancellationToken = default);
+    Task<bool> SoftDeleteAsync(Guid id, CancellationToken cancellationToken = default);
 }
