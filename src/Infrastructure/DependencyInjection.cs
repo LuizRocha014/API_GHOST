@@ -20,6 +20,7 @@ public static class DependencyInjection
         services.AddScoped<SqlSession>();
 
         services.AddSingleton<IPasswordHasher, PasswordHasher>();
+        services.AddScoped<IAccessRepository, AccessRepository>();
         services.AddScoped<ICompanyRepository, CompanyRepository>();
         services.AddScoped<IUserRepository, UserRepository>();
         services.AddScoped<IProductRepository, ProductRepository>();
@@ -27,6 +28,7 @@ public static class DependencyInjection
         services.AddScoped<IProductImageRepository, ProductImageRepository>();
         services.AddScoped<IProductBatchRepository, ProductBatchRepository>();
         services.AddScoped<IInventoryRepository, InventoryRepository>();
+        services.AddScoped<IUserCompanyBranchRepository, UserCompanyBranchRepository>();
         services.AddScoped<IJwtTokenService, JwtTokenService>();
         return services;
     }

@@ -66,6 +66,9 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
     c.SwaggerDoc("v1", new OpenApiInfo { Title = "API_GHOST", Version = "v1" });
+
+    c.IncludeAssemblyXmlComments(typeof(Program).Assembly);
+
     // ApiKey no header Authorization faz o Swagger enviar só o valor colado (sem prefixo Bearer).
     c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
     {

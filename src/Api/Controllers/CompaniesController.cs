@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace Api.Controllers;
 
+/// <summary>Cadastro de empresas.</summary>
 [ApiController]
 [Route("api/[controller]")]
 [Authorize]
@@ -16,6 +17,7 @@ public sealed class CompaniesController : ControllerBase
         _companies = companies;
     }
 
+    /// <summary>Lista empresas ativas.</summary>
     [HttpGet]
     [ProducesResponseType(typeof(IReadOnlyList<CompanyDto>), StatusCodes.Status200OK)]
     public async Task<ActionResult<IReadOnlyList<CompanyDto>>> GetAll(CancellationToken cancellationToken)
@@ -24,6 +26,7 @@ public sealed class CompaniesController : ControllerBase
         return Ok(items);
     }
 
+    /// <summary>Obtém uma empresa por id.</summary>
     [HttpGet("{id:guid}")]
     [ProducesResponseType(typeof(CompanyDto), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
@@ -36,6 +39,7 @@ public sealed class CompaniesController : ControllerBase
         return Ok(company);
     }
 
+    /// <summary>Cria uma empresa.</summary>
     [HttpPost]
     [ProducesResponseType(typeof(CompanyDto), StatusCodes.Status201Created)]
     public async Task<ActionResult<CompanyDto>> Create([FromBody] CreateCompanyRequest request, CancellationToken cancellationToken)
@@ -44,6 +48,7 @@ public sealed class CompaniesController : ControllerBase
         return CreatedAtAction(nameof(GetById), new { id = created.Id }, created);
     }
 
+    /// <summary>Atualiza uma empresa.</summary>
     [HttpPut("{id:guid}")]
     [ProducesResponseType(typeof(CompanyDto), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
@@ -56,6 +61,7 @@ public sealed class CompaniesController : ControllerBase
         return Ok(updated);
     }
 
+    /// <summary>Remove a empresa (soft delete).</summary>
     [HttpDelete("{id:guid}")]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]

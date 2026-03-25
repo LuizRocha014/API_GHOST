@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace Api.Controllers;
 
+/// <summary>Autenticação e emissão de token.</summary>
 [ApiController]
 [Route("api/[controller]")]
 [AllowAnonymous]
@@ -16,7 +17,7 @@ public sealed class AuthController : ControllerBase
         _auth = auth;
     }
 
-    /// <summary>Autentica o usuário e retorna JWT Bearer.</summary>
+    /// <summary>Autentica e retorna o JWT.</summary>
     [HttpPost("login")]
     [ProducesResponseType(typeof(LoginResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]

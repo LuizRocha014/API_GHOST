@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace Api.Controllers;
 
+/// <summary>Cadastro de usuários.</summary>
 [ApiController]
 [Route("api/[controller]")]
 [Authorize]
@@ -16,6 +17,7 @@ public sealed class UsersController : ControllerBase
         _users = users;
     }
 
+    /// <summary>Lista usuários ativos.</summary>
     [HttpGet]
     [ProducesResponseType(typeof(IReadOnlyList<UserDto>), StatusCodes.Status200OK)]
     public async Task<ActionResult<IReadOnlyList<UserDto>>> GetAll(CancellationToken cancellationToken)
@@ -24,6 +26,7 @@ public sealed class UsersController : ControllerBase
         return Ok(items);
     }
 
+    /// <summary>Obtém um usuário por id.</summary>
     [HttpGet("{id:guid}")]
     [ProducesResponseType(typeof(UserDto), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
@@ -36,6 +39,7 @@ public sealed class UsersController : ControllerBase
         return Ok(user);
     }
 
+    /// <summary>Cria um usuário.</summary>
     [HttpPost]
     [ProducesResponseType(typeof(UserDto), StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
@@ -52,6 +56,7 @@ public sealed class UsersController : ControllerBase
         }
     }
 
+    /// <summary>Atualiza um usuário.</summary>
     [HttpPut("{id:guid}")]
     [ProducesResponseType(typeof(UserDto), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
@@ -72,6 +77,7 @@ public sealed class UsersController : ControllerBase
         }
     }
 
+    /// <summary>Remove o usuário (soft delete).</summary>
     [HttpDelete("{id:guid}")]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]

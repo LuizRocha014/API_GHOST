@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace Api.Controllers;
 
+/// <summary>Cadastro de produtos.</summary>
 [ApiController]
 [Route("api/[controller]")]
 [Authorize]
@@ -16,6 +17,7 @@ public sealed class ProductsController : ControllerBase
         _productService = productService;
     }
 
+    /// <summary>Lista produtos ativos.</summary>
     [HttpGet]
     [ProducesResponseType(typeof(IReadOnlyList<ProductDto>), StatusCodes.Status200OK)]
     public async Task<ActionResult<IReadOnlyList<ProductDto>>> GetAll(CancellationToken cancellationToken)
@@ -24,6 +26,7 @@ public sealed class ProductsController : ControllerBase
         return Ok(items);
     }
 
+    /// <summary>Obtém um produto por id.</summary>
     [HttpGet("{id:guid}")]
     [ProducesResponseType(typeof(ProductDto), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
@@ -36,6 +39,7 @@ public sealed class ProductsController : ControllerBase
         return Ok(product);
     }
 
+    /// <summary>Cria um produto.</summary>
     [HttpPost]
     [ProducesResponseType(typeof(ProductDto), StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
@@ -52,6 +56,7 @@ public sealed class ProductsController : ControllerBase
         }
     }
 
+    /// <summary>Atualiza um produto.</summary>
     [HttpPut("{id:guid}")]
     [ProducesResponseType(typeof(ProductDto), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
@@ -75,6 +80,7 @@ public sealed class ProductsController : ControllerBase
         }
     }
 
+    /// <summary>Remove o produto (soft delete).</summary>
     [HttpDelete("{id:guid}")]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
