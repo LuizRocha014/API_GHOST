@@ -15,9 +15,9 @@ public sealed class BillService : IBillService
 
     public BillService(IBillRepository repository) => _repository = repository;
 
-    public async Task<IReadOnlyList<BillDto>> ListAsync(Guid userId, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<BillDto>> ListAsync(Guid userId, DateTime? modifiedSince = null, CancellationToken cancellationToken = default)
     {
-        var items = await _repository.GetAllByUserAsync(userId, cancellationToken).ConfigureAwait(false);
+        var items = await _repository.GetAllByUserAsync(userId, modifiedSince, cancellationToken).ConfigureAwait(false);
         return items.Select(b => b.ToDto()).ToList();
     }
 
@@ -34,11 +34,12 @@ public sealed class BillService : IBillService
             throw new InvalidOperationException("Kind deve ser payable ou receivable.");
         if (request.Amount <= 0)
             throw new InvalidOperationException("Amount deve ser positivo.");
+        ValidateInstallment(request.InstallmentCurrent, request.InstallmentTotal);
 
         var utc = DateTime.UtcNow;
         var entity = new Bill
         {
-            Id = Guid.NewGuid(),
+            Id = request.Id ?? Guid.NewGuid(),
             UserId = userId,
             AccountId = request.AccountId,
             CategoryId = request.CategoryId,
@@ -48,6 +49,9 @@ public sealed class BillService : IBillService
             Kind = kind,
             DueDate = request.DueDate.Date,
             Status = "pending",
+            PaidAmount = 0,
+            InstallmentCurrent = request.InstallmentCurrent,
+            InstallmentTotal = request.InstallmentTotal,
             Notes = string.IsNullOrWhiteSpace(request.Notes) ? null : request.Notes.Trim(),
             CreatedAt = utc,
             UpdatedAt = utc
@@ -69,6 +73,17 @@ public sealed class BillService : IBillService
             throw new InvalidOperationException("Kind deve ser payable ou receivable.");
         if (!ValidStatus.Contains(status))
             throw new InvalidOperationException("Status inválido.");
+        ValidateInstallment(request.InstallmentCurrent, request.InstallmentTotal);
+
+        // PaidAmount: aceita o valor enviado, com clamp [0, Amount].
+        // Quando ausente, mantém o valor atual.
+        var paidAmount = request.PaidAmount ?? entity.PaidAmount;
+        if (paidAmount < 0) paidAmount = 0;
+        if (paidAmount > request.Amount) paidAmount = request.Amount;
+
+        // Se o status pedido é de quitação, força paid_amount = amount.
+        var isSettling = status == "paid" || status == "received";
+        if (isSettling) paidAmount = request.Amount;
 
         entity.AccountId = request.AccountId;
         entity.CategoryId = request.CategoryId;
@@ -78,8 +93,11 @@ public sealed class BillService : IBillService
         entity.Kind = kind;
         entity.DueDate = request.DueDate.Date;
         entity.Status = status;
-        entity.PaidAt = request.PaidAt;
+        entity.PaidAmount = paidAmount;
+        entity.PaidAt = request.PaidAt ?? (isSettling ? DateTime.UtcNow : null);
         entity.PaidTransactionId = request.PaidTransactionId;
+        entity.InstallmentCurrent = request.InstallmentCurrent ?? entity.InstallmentCurrent;
+        entity.InstallmentTotal = request.InstallmentTotal ?? entity.InstallmentTotal;
         entity.Notes = string.IsNullOrWhiteSpace(request.Notes) ? null : request.Notes.Trim();
         entity.UpdatedAt = DateTime.UtcNow;
 
@@ -89,4 +107,15 @@ public sealed class BillService : IBillService
 
     public Task<bool> DeleteAsync(Guid id, Guid userId, CancellationToken cancellationToken = default) =>
         _repository.DeleteAsync(id, userId, cancellationToken);
+
+    private static void ValidateInstallment(short? current, short? total)
+    {
+        if (current.HasValue || total.HasValue)
+        {
+            if (!current.HasValue || !total.HasValue)
+                throw new InvalidOperationException("Informe parcela atual e total juntos.");
+            if (total < 1 || current < 1 || current > total)
+                throw new InvalidOperationException("Parcela inválida.");
+        }
+    }
 }

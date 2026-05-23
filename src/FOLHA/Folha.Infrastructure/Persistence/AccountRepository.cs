@@ -18,11 +18,16 @@ public sealed class AccountRepository : IAccountRepository
         created_at AS CreatedAt, updated_at AS UpdatedAt
     """;
 
-    public async Task<IReadOnlyList<Account>> GetAllByUserAsync(Guid userId, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<Account>> GetAllByUserAsync(Guid userId, DateTime? modifiedSince = null, CancellationToken cancellationToken = default)
     {
-        var sql = $"SELECT {Columns} FROM FOLHA_Accounts WHERE user_id = @UserId ORDER BY sort_order, name";
+        var sql = $"""
+            SELECT {Columns} FROM FOLHA_Accounts
+            WHERE user_id = @UserId
+              AND (@ModifiedSince IS NULL OR updated_at > @ModifiedSince)
+            ORDER BY sort_order, name
+            """;
         var list = await _session.Connection
-            .QueryAsync<Account>(new CommandDefinition(sql, new { UserId = userId }, cancellationToken: cancellationToken))
+            .QueryAsync<Account>(new CommandDefinition(sql, new { UserId = userId, ModifiedSince = modifiedSince }, cancellationToken: cancellationToken))
             .ConfigureAwait(false);
         return list.AsList();
     }

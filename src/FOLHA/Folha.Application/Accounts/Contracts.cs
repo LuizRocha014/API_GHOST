@@ -25,7 +25,9 @@ public sealed record CreateAccountRequest(
     decimal InitialBalance,
     string? CurrencyCode = null,
     bool IncludeInTotal = true,
-    int SortOrder = 0);
+    int SortOrder = 0,
+    // Id opcional gerado pelo cliente (offline-first).
+    Guid? Id = null);
 
 public sealed record UpdateAccountRequest(
     string Name,

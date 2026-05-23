@@ -15,13 +15,14 @@ public sealed class TransactionsController : ControllerBase
 
     public TransactionsController(ITransactionService service) => _service = service;
 
-    /// <summary>Lista transações com paginação.</summary>
+    /// <summary>Lista transações com paginação. Use `modifiedSince` para sync delta.</summary>
     [HttpGet]
     public async Task<ActionResult<IReadOnlyList<TransactionDto>>> GetAll(
         [FromQuery] int skip = 0,
         [FromQuery] int take = 50,
+        [FromQuery] DateTime? modifiedSince = null,
         CancellationToken cancellationToken = default) =>
-        Ok(await _service.ListAsync(this.GetUserId(), skip, take, cancellationToken));
+        Ok(await _service.ListAsync(this.GetUserId(), skip, take, modifiedSince, cancellationToken));
 
     [HttpGet("{id:guid}")]
     public async Task<ActionResult<TransactionDto>> GetById(Guid id, CancellationToken cancellationToken)

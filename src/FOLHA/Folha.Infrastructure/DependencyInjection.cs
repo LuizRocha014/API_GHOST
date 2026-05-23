@@ -29,6 +29,7 @@ public static class DependencyInjection
         services.AddScoped<IRecurrenceRepository, RecurrenceRepository>();
         services.AddScoped<INotificationRepository, NotificationRepository>();
         services.AddScoped<ISessionRepository, SessionRepository>();
+        services.AddScoped<IRefreshTokenRepository, RefreshTokenRepository>();
         services.AddScoped<MigrationRunner>();
         return services;
     }

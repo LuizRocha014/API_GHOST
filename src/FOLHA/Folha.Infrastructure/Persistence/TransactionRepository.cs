@@ -22,16 +22,17 @@ public sealed class TransactionRepository : ITransactionRepository
         deleted_at AS DeletedAt, created_at AS CreatedAt, updated_at AS UpdatedAt
     """;
 
-    public async Task<IReadOnlyList<Transaction>> GetAllByUserAsync(Guid userId, int skip, int take, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<Transaction>> GetAllByUserAsync(Guid userId, int skip, int take, DateTime? modifiedSince = null, CancellationToken cancellationToken = default)
     {
         var sql = $"""
             SELECT {Columns} FROM FOLHA_Transactions
             WHERE user_id = @UserId AND deleted_at IS NULL
+              AND (@ModifiedSince IS NULL OR updated_at > @ModifiedSince)
             ORDER BY occurred_at DESC, created_at DESC
             OFFSET @Skip ROWS FETCH NEXT @Take ROWS ONLY
             """;
         var list = await _session.Connection
-            .QueryAsync<Transaction>(new CommandDefinition(sql, new { UserId = userId, Skip = skip, Take = take }, cancellationToken: cancellationToken))
+            .QueryAsync<Transaction>(new CommandDefinition(sql, new { UserId = userId, Skip = skip, Take = take, ModifiedSince = modifiedSince }, cancellationToken: cancellationToken))
             .ConfigureAwait(false);
         return list.AsList();
     }

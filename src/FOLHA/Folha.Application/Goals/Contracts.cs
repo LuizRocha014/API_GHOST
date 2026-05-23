@@ -24,7 +24,9 @@ public sealed record CreateGoalRequest(
     decimal TargetAmount,
     DateTime? TargetDate,
     string? Icon,
-    string? ColorHex);
+    string? ColorHex,
+    // Id opcional gerado pelo cliente (offline-first).
+    Guid? Id = null);
 
 public sealed record UpdateGoalRequest(
     Guid? AccountId,

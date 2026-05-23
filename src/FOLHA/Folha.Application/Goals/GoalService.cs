@@ -29,7 +29,7 @@ public sealed class GoalService : IGoalService
         var utc = DateTime.UtcNow;
         var entity = new Goal
         {
-            Id = Guid.NewGuid(),
+            Id = request.Id ?? Guid.NewGuid(),
             UserId = userId,
             AccountId = request.AccountId,
             Title = request.Title.Trim(),

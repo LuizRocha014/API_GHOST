@@ -12,9 +12,9 @@ public sealed class AccountService : IAccountService
 
     public AccountService(IAccountRepository repository) => _repository = repository;
 
-    public async Task<IReadOnlyList<AccountDto>> ListAsync(Guid userId, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<AccountDto>> ListAsync(Guid userId, DateTime? modifiedSince = null, CancellationToken cancellationToken = default)
     {
-        var items = await _repository.GetAllByUserAsync(userId, cancellationToken).ConfigureAwait(false);
+        var items = await _repository.GetAllByUserAsync(userId, modifiedSince, cancellationToken).ConfigureAwait(false);
         return items.Select(a => a.ToDto()).ToList();
     }
 
@@ -33,7 +33,7 @@ public sealed class AccountService : IAccountService
         var utc = DateTime.UtcNow;
         var entity = new Account
         {
-            Id = Guid.NewGuid(),
+            Id = request.Id ?? Guid.NewGuid(),
             UserId = userId,
             Name = request.Name.Trim(),
             Kind = kind,

@@ -12,11 +12,11 @@ public sealed class TransactionService : ITransactionService
 
     public TransactionService(ITransactionRepository repository) => _repository = repository;
 
-    public async Task<IReadOnlyList<TransactionDto>> ListAsync(Guid userId, int skip, int take, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<TransactionDto>> ListAsync(Guid userId, int skip, int take, DateTime? modifiedSince = null, CancellationToken cancellationToken = default)
     {
         if (skip < 0) skip = 0;
-        if (take <= 0 || take > 200) take = 50;
-        var items = await _repository.GetAllByUserAsync(userId, skip, take, cancellationToken).ConfigureAwait(false);
+        if (take <= 0 || take > 500) take = 50;
+        var items = await _repository.GetAllByUserAsync(userId, skip, take, modifiedSince, cancellationToken).ConfigureAwait(false);
         return items.Select(t => t.ToDto()).ToList();
     }
 
@@ -33,12 +33,13 @@ public sealed class TransactionService : ITransactionService
         var utc = DateTime.UtcNow;
         var entity = new Transaction
         {
-            Id = Guid.NewGuid(),
+            Id = request.Id ?? Guid.NewGuid(),
             UserId = userId,
             AccountId = request.AccountId,
             CreditCardId = request.CreditCardId,
             CreditCardStatementId = request.CreditCardStatementId,
             CategoryId = request.CategoryId,
+            BillId = request.BillId,
             Description = request.Description.Trim(),
             Place = string.IsNullOrWhiteSpace(request.Place) ? null : request.Place.Trim(),
             Notes = string.IsNullOrWhiteSpace(request.Notes) ? null : request.Notes.Trim(),
@@ -48,7 +49,7 @@ public sealed class TransactionService : ITransactionService
             InstallmentNumber = request.InstallmentNumber,
             InstallmentTotal = request.InstallmentTotal,
             IsPending = request.IsPending,
-            IsExcludedFromReports = false,
+            IsExcludedFromReports = request.IsExcludedFromReports,
             CreatedAt = utc,
             UpdatedAt = utc
         };

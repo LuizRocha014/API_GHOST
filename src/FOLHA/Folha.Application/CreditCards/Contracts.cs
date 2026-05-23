@@ -21,7 +21,9 @@ public sealed record CreateCreditCardRequest(
     string? LastFour,
     decimal CreditLimit,
     byte ClosingDay,
-    byte DueDay);
+    byte DueDay,
+    // Id opcional gerado pelo cliente (offline-first).
+    Guid? Id = null);
 
 public sealed record UpdateCreditCardRequest(
     Guid AccountId,

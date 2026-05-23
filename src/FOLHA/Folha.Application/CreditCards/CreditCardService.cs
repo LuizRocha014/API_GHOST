@@ -37,7 +37,7 @@ public sealed class CreditCardService : ICreditCardService
         var utc = DateTime.UtcNow;
         var entity = new CreditCard
         {
-            Id = Guid.NewGuid(),
+            Id = request.Id ?? Guid.NewGuid(),
             UserId = userId,
             AccountId = request.AccountId,
             Name = request.Name.Trim(),

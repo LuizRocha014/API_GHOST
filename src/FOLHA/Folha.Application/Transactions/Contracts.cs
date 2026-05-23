@@ -37,7 +37,15 @@ public sealed record CreateTransactionRequest(
     DateTime OccurredAt,
     short? InstallmentNumber = null,
     short? InstallmentTotal = null,
-    bool IsPending = false);
+    bool IsPending = false,
+    // Id opcional gerado pelo cliente (offline-first).
+    Guid? Id = null,
+    // Quando a transação registra o pagamento de uma conta fixa, amarra ao bill.
+    Guid? BillId = null,
+    // Quando true, a transação aparece na timeline mas é excluída de relatórios
+    // (gráficos, saldo, weekDelta). Usado p/ pagamentos de bills que já têm
+    // sua linha própria em FOLHA_Bills.
+    bool IsExcludedFromReports = false);
 
 public sealed record UpdateTransactionRequest(
     Guid? AccountId,

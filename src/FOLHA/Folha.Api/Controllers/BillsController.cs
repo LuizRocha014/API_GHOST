@@ -16,8 +16,10 @@ public sealed class BillsController : ControllerBase
     public BillsController(IBillService service) => _service = service;
 
     [HttpGet]
-    public async Task<ActionResult<IReadOnlyList<BillDto>>> GetAll(CancellationToken cancellationToken) =>
-        Ok(await _service.ListAsync(this.GetUserId(), cancellationToken));
+    public async Task<ActionResult<IReadOnlyList<BillDto>>> GetAll(
+        [FromQuery] DateTime? modifiedSince,
+        CancellationToken cancellationToken) =>
+        Ok(await _service.ListAsync(this.GetUserId(), modifiedSince, cancellationToken));
 
     [HttpGet("{id:guid}")]
     public async Task<ActionResult<BillDto>> GetById(Guid id, CancellationToken cancellationToken)
