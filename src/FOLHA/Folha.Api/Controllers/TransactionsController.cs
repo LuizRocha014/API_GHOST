@@ -12,8 +12,13 @@ namespace Folha.Api.Controllers;
 public sealed class TransactionsController : ControllerBase
 {
     private readonly ITransactionService _service;
+    private readonly ILogger<TransactionsController> _logger;
 
-    public TransactionsController(ITransactionService service) => _service = service;
+    public TransactionsController(ITransactionService service, ILogger<TransactionsController> logger)
+    {
+        _service = service;
+        _logger = logger;
+    }
 
     /// <summary>Lista transações com paginação. Use `modifiedSince` para sync delta.</summary>
     [HttpGet]
@@ -41,6 +46,7 @@ public sealed class TransactionsController : ControllerBase
         }
         catch (InvalidOperationException ex)
         {
+            _logger.LogError(ex, "Erro ao criar Transaction para usuário {UserId}", this.GetUserId());
             return BadRequest(new { error = ex.Message });
         }
     }
@@ -55,6 +61,7 @@ public sealed class TransactionsController : ControllerBase
         }
         catch (InvalidOperationException ex)
         {
+            _logger.LogError(ex, "Erro ao atualizar Transaction {TransactionId} para usuário {UserId}", id, this.GetUserId());
             return BadRequest(new { error = ex.Message });
         }
     }

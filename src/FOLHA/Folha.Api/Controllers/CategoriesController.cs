@@ -12,8 +12,13 @@ namespace Folha.Api.Controllers;
 public sealed class CategoriesController : ControllerBase
 {
     private readonly ICategoryService _service;
+    private readonly ILogger<CategoriesController> _logger;
 
-    public CategoriesController(ICategoryService service) => _service = service;
+    public CategoriesController(ICategoryService service, ILogger<CategoriesController> logger)
+    {
+        _service = service;
+        _logger = logger;
+    }
 
     [HttpGet]
     public async Task<ActionResult<IReadOnlyList<CategoryDto>>> GetAll(CancellationToken cancellationToken) =>
@@ -36,6 +41,7 @@ public sealed class CategoriesController : ControllerBase
         }
         catch (InvalidOperationException ex)
         {
+            _logger.LogError(ex, "Erro ao criar Category para usuário {UserId}", this.GetUserId());
             return BadRequest(new { error = ex.Message });
         }
     }
@@ -50,6 +56,7 @@ public sealed class CategoriesController : ControllerBase
         }
         catch (InvalidOperationException ex)
         {
+            _logger.LogError(ex, "Erro ao atualizar Category {CategoryId} para usuário {UserId}", id, this.GetUserId());
             return BadRequest(new { error = ex.Message });
         }
     }

@@ -12,8 +12,13 @@ namespace Folha.Api.Controllers;
 public sealed class BudgetsController : ControllerBase
 {
     private readonly IBudgetService _service;
+    private readonly ILogger<BudgetsController> _logger;
 
-    public BudgetsController(IBudgetService service) => _service = service;
+    public BudgetsController(IBudgetService service, ILogger<BudgetsController> logger)
+    {
+        _service = service;
+        _logger = logger;
+    }
 
     [HttpGet]
     public async Task<ActionResult<IReadOnlyList<BudgetDto>>> GetAll(CancellationToken cancellationToken) =>
@@ -36,6 +41,7 @@ public sealed class BudgetsController : ControllerBase
         }
         catch (InvalidOperationException ex)
         {
+            _logger.LogError(ex, "Erro ao criar Budget para usuário {UserId}", this.GetUserId());
             return BadRequest(new { error = ex.Message });
         }
     }
@@ -50,6 +56,7 @@ public sealed class BudgetsController : ControllerBase
         }
         catch (InvalidOperationException ex)
         {
+            _logger.LogError(ex, "Erro ao atualizar Budget {BudgetId} para usuário {UserId}", id, this.GetUserId());
             return BadRequest(new { error = ex.Message });
         }
     }

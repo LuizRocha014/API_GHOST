@@ -12,8 +12,13 @@ namespace Folha.Api.Controllers;
 public sealed class RecurrencesController : ControllerBase
 {
     private readonly IRecurrenceService _service;
+    private readonly ILogger<RecurrencesController> _logger;
 
-    public RecurrencesController(IRecurrenceService service) => _service = service;
+    public RecurrencesController(IRecurrenceService service, ILogger<RecurrencesController> logger)
+    {
+        _service = service;
+        _logger = logger;
+    }
 
     [HttpGet]
     public async Task<ActionResult<IReadOnlyList<RecurrenceDto>>> GetAll(CancellationToken cancellationToken) =>
@@ -36,6 +41,7 @@ public sealed class RecurrencesController : ControllerBase
         }
         catch (InvalidOperationException ex)
         {
+            _logger.LogError(ex, "Erro ao criar Recurrence para usuário {UserId}", this.GetUserId());
             return BadRequest(new { error = ex.Message });
         }
     }
@@ -50,6 +56,7 @@ public sealed class RecurrencesController : ControllerBase
         }
         catch (InvalidOperationException ex)
         {
+            _logger.LogError(ex, "Erro ao atualizar Recurrence {RecurrenceId} para usuário {UserId}", id, this.GetUserId());
             return BadRequest(new { error = ex.Message });
         }
     }

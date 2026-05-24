@@ -13,10 +13,12 @@ namespace Api.Controllers;
 public sealed class InventoryController : ControllerBase
 {
     private readonly IInventoryService _inventory;
+    private readonly ILogger<InventoryController> _logger;
 
-    public InventoryController(IInventoryService inventory)
+    public InventoryController(IInventoryService inventory, ILogger<InventoryController> logger)
     {
         _inventory = inventory;
+        _logger = logger;
     }
 
     /// <summary>Registra entrada de mercadoria no estoque.</summary>
@@ -121,6 +123,7 @@ public sealed class InventoryController : ControllerBase
         }
         catch (InvalidOperationException ex)
         {
+            _logger.LogError(ex, "Erro em operação do InventoryController");
             return BadRequest(new { error = ex.Message });
         }
     }

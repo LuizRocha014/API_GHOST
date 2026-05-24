@@ -9,7 +9,7 @@ public sealed record BillDto(
     string Description,
     decimal Amount,
     string Kind,
-    DateTime DueDate,
+    DateTime? DueDate,
     string Status,
     decimal PaidAmount,
     DateTime? PaidAt,
@@ -27,7 +27,7 @@ public sealed record CreateBillRequest(
     string Description,
     decimal Amount,
     string Kind,
-    DateTime DueDate,
+    DateTime? DueDate,
     string? Notes = null,
     // Id opcional gerado pelo cliente (offline-first). Quando vier, é usado
     // direto — assim o app não precisa esperar o roundtrip para conhecer o id
@@ -43,7 +43,7 @@ public sealed record UpdateBillRequest(
     string Description,
     decimal Amount,
     string Kind,
-    DateTime DueDate,
+    DateTime? DueDate,
     string Status,
     DateTime? PaidAt,
     Guid? PaidTransactionId,

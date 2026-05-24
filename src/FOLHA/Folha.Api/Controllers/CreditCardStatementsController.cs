@@ -11,8 +11,13 @@ namespace Folha.Api.Controllers;
 public sealed class CreditCardStatementsController : ControllerBase
 {
     private readonly ICreditCardStatementService _service;
+    private readonly ILogger<CreditCardStatementsController> _logger;
 
-    public CreditCardStatementsController(ICreditCardStatementService service) => _service = service;
+    public CreditCardStatementsController(ICreditCardStatementService service, ILogger<CreditCardStatementsController> logger)
+    {
+        _service = service;
+        _logger = logger;
+    }
 
     /// <summary>Lista faturas de um cartão.</summary>
     [HttpGet("by-card/{creditCardId:guid}")]
@@ -36,6 +41,7 @@ public sealed class CreditCardStatementsController : ControllerBase
         }
         catch (InvalidOperationException ex)
         {
+            _logger.LogError(ex, "Erro ao criar CreditCardStatement");
             return BadRequest(new { error = ex.Message });
         }
     }
@@ -50,6 +56,7 @@ public sealed class CreditCardStatementsController : ControllerBase
         }
         catch (InvalidOperationException ex)
         {
+            _logger.LogError(ex, "Erro ao atualizar CreditCardStatement {StatementId}", id);
             return BadRequest(new { error = ex.Message });
         }
     }

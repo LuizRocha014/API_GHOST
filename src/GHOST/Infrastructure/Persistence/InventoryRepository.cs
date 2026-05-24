@@ -2,16 +2,19 @@ using Application.Abstractions;
 using Dapper;
 using Domain;
 using Domain.Entities;
+using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.Persistence;
 
 public sealed class InventoryRepository : IInventoryRepository
 {
     private readonly SqlSession _session;
+    private readonly ILogger<InventoryRepository> _logger;
 
-    public InventoryRepository(SqlSession session)
+    public InventoryRepository(SqlSession session, ILogger<InventoryRepository> logger)
     {
         _session = session;
+        _logger = logger;
     }
 
     public async Task<decimal> GetTotalStockForProductAsync(Guid productId, CancellationToken cancellationToken = default)
@@ -134,8 +137,9 @@ public sealed class InventoryRepository : IInventoryRepository
 
             await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
         }
-        catch
+        catch (Exception ex)
         {
+            _logger.LogError(ex, "Erro ao registrar entrada de estoque (Product {ProductId}, Branch {BranchId})", command.ProductId, command.BranchId);
             await tx.RollbackAsync(cancellationToken).ConfigureAwait(false);
             throw;
         }
@@ -281,8 +285,9 @@ public sealed class InventoryRepository : IInventoryRepository
 
             await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
         }
-        catch
+        catch (Exception ex)
         {
+            _logger.LogError(ex, "Erro ao registrar venda (Branch {BranchId}, SaleId {SaleId})", command.BranchId, saleId);
             await tx.RollbackAsync(cancellationToken).ConfigureAwait(false);
             throw;
         }
@@ -412,8 +417,9 @@ public sealed class InventoryRepository : IInventoryRepository
 
             await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
         }
-        catch
+        catch (Exception ex)
         {
+            _logger.LogError(ex, "Erro ao registrar transferência (SourceBatch {SourceBatchId} -> Branch {BranchDestId})", command.SourceBatchId, command.BranchDestId);
             await tx.RollbackAsync(cancellationToken).ConfigureAwait(false);
             throw;
         }
@@ -593,8 +599,9 @@ public sealed class InventoryRepository : IInventoryRepository
 
             await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
         }
-        catch
+        catch (Exception ex)
         {
+            _logger.LogError(ex, "Erro ao registrar produção (Branch {BranchId}, ProductionId {ProductionId})", command.BranchId, productionId);
             await tx.RollbackAsync(cancellationToken).ConfigureAwait(false);
             throw;
         }

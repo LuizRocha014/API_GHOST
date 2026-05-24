@@ -11,10 +11,12 @@ namespace Api.Controllers;
 public sealed class AccessesController : ControllerBase
 {
     private readonly IAccessService _accesses;
+    private readonly ILogger<AccessesController> _logger;
 
-    public AccessesController(IAccessService accesses)
+    public AccessesController(IAccessService accesses, ILogger<AccessesController> logger)
     {
         _accesses = accesses;
+        _logger = logger;
     }
 
     /// <summary>Lista tipos de acesso ativos.</summary>
@@ -54,6 +56,7 @@ public sealed class AccessesController : ControllerBase
         }
         catch (InvalidOperationException ex)
         {
+            _logger.LogError(ex, "Erro ao criar Access");
             return BadRequest(new { message = ex.Message });
         }
     }

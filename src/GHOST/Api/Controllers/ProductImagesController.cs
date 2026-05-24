@@ -11,10 +11,12 @@ namespace Api.Controllers;
 public sealed class ProductImagesController : ControllerBase
 {
     private readonly IProductImageService _images;
+    private readonly ILogger<ProductImagesController> _logger;
 
-    public ProductImagesController(IProductImageService images)
+    public ProductImagesController(IProductImageService images, ILogger<ProductImagesController> logger)
     {
         _images = images;
+        _logger = logger;
     }
 
     /// <summary>Lista imagens do produto.</summary>
@@ -32,6 +34,7 @@ public sealed class ProductImagesController : ControllerBase
         }
         catch (InvalidOperationException ex)
         {
+            _logger.LogError(ex, "Erro ao listar imagens do Product {ProductId}", productId);
             return BadRequest(new { error = ex.Message });
         }
     }
@@ -68,6 +71,7 @@ public sealed class ProductImagesController : ControllerBase
         }
         catch (InvalidOperationException ex)
         {
+            _logger.LogError(ex, "Erro ao criar imagem do Product {ProductId}", productId);
             return BadRequest(new { error = ex.Message });
         }
     }

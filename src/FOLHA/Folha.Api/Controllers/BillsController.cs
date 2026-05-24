@@ -12,8 +12,13 @@ namespace Folha.Api.Controllers;
 public sealed class BillsController : ControllerBase
 {
     private readonly IBillService _service;
+    private readonly ILogger<BillsController> _logger;
 
-    public BillsController(IBillService service) => _service = service;
+    public BillsController(IBillService service, ILogger<BillsController> logger)
+    {
+        _service = service;
+        _logger = logger;
+    }
 
     [HttpGet]
     public async Task<ActionResult<IReadOnlyList<BillDto>>> GetAll(
@@ -38,6 +43,7 @@ public sealed class BillsController : ControllerBase
         }
         catch (InvalidOperationException ex)
         {
+            _logger.LogError(ex, "Erro ao criar Bill para usuário {UserId}", this.GetUserId());
             return BadRequest(new { error = ex.Message });
         }
     }
@@ -52,6 +58,7 @@ public sealed class BillsController : ControllerBase
         }
         catch (InvalidOperationException ex)
         {
+            _logger.LogError(ex, "Erro ao atualizar Bill {BillId} para usuário {UserId}", id, this.GetUserId());
             return BadRequest(new { error = ex.Message });
         }
     }

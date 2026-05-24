@@ -11,10 +11,12 @@ namespace Api.Controllers;
 public sealed class ProductsController : ControllerBase
 {
     private readonly IProductService _productService;
+    private readonly ILogger<ProductsController> _logger;
 
-    public ProductsController(IProductService productService)
+    public ProductsController(IProductService productService, ILogger<ProductsController> logger)
     {
         _productService = productService;
+        _logger = logger;
     }
 
     /// <summary>Lista produtos ativos.</summary>
@@ -52,6 +54,7 @@ public sealed class ProductsController : ControllerBase
         }
         catch (InvalidOperationException ex)
         {
+            _logger.LogError(ex, "Erro ao criar Product");
             return BadRequest(new { error = ex.Message });
         }
     }
@@ -76,6 +79,7 @@ public sealed class ProductsController : ControllerBase
         }
         catch (InvalidOperationException ex)
         {
+            _logger.LogError(ex, "Erro ao atualizar Product {ProductId}", id);
             return BadRequest(new { error = ex.Message });
         }
     }

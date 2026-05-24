@@ -12,8 +12,13 @@ namespace Folha.Api.Controllers;
 public sealed class TransfersController : ControllerBase
 {
     private readonly ITransferService _service;
+    private readonly ILogger<TransfersController> _logger;
 
-    public TransfersController(ITransferService service) => _service = service;
+    public TransfersController(ITransferService service, ILogger<TransfersController> logger)
+    {
+        _service = service;
+        _logger = logger;
+    }
 
     [HttpGet]
     public async Task<ActionResult<IReadOnlyList<TransferDto>>> GetAll(CancellationToken cancellationToken) =>
@@ -36,6 +41,7 @@ public sealed class TransfersController : ControllerBase
         }
         catch (InvalidOperationException ex)
         {
+            _logger.LogError(ex, "Erro ao criar Transfer para usuário {UserId}", this.GetUserId());
             return BadRequest(new { error = ex.Message });
         }
     }
@@ -50,6 +56,7 @@ public sealed class TransfersController : ControllerBase
         }
         catch (InvalidOperationException ex)
         {
+            _logger.LogError(ex, "Erro ao atualizar Transfer {TransferId} para usuário {UserId}", id, this.GetUserId());
             return BadRequest(new { error = ex.Message });
         }
     }

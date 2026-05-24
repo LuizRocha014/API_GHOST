@@ -10,7 +10,11 @@ public sealed class Bill
     public string Description { get; set; } = string.Empty;
     public decimal Amount { get; set; }
     public string Kind { get; set; } = "payable";
-    public DateTime DueDate { get; set; }
+    /// <summary>
+    /// Data de vencimento. Opcional — contas avulsas (sem boleto/data definida)
+    /// podem ser cadastradas e ganhar uma data depois via update.
+    /// </summary>
+    public DateTime? DueDate { get; set; }
     public string Status { get; set; } = "pending";
 
     /// <summary>

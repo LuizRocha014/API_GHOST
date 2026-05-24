@@ -12,8 +12,13 @@ namespace Folha.Api.Controllers;
 public sealed class AccountsController : ControllerBase
 {
     private readonly IAccountService _service;
+    private readonly ILogger<AccountsController> _logger;
 
-    public AccountsController(IAccountService service) => _service = service;
+    public AccountsController(IAccountService service, ILogger<AccountsController> logger)
+    {
+        _service = service;
+        _logger = logger;
+    }
 
     [HttpGet]
     public async Task<ActionResult<IReadOnlyList<AccountDto>>> GetAll(
@@ -38,6 +43,7 @@ public sealed class AccountsController : ControllerBase
         }
         catch (InvalidOperationException ex)
         {
+            _logger.LogError(ex, "Erro ao criar Account para usuário {UserId}", this.GetUserId());
             return BadRequest(new { error = ex.Message });
         }
     }
@@ -52,6 +58,7 @@ public sealed class AccountsController : ControllerBase
         }
         catch (InvalidOperationException ex)
         {
+            _logger.LogError(ex, "Erro ao atualizar Account {AccountId} para usuário {UserId}", id, this.GetUserId());
             return BadRequest(new { error = ex.Message });
         }
     }

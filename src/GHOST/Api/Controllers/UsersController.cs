@@ -11,10 +11,12 @@ namespace Api.Controllers;
 public sealed class UsersController : ControllerBase
 {
     private readonly IUserService _users;
+    private readonly ILogger<UsersController> _logger;
 
-    public UsersController(IUserService users)
+    public UsersController(IUserService users, ILogger<UsersController> logger)
     {
         _users = users;
+        _logger = logger;
     }
 
     /// <summary>Lista usuários ativos.</summary>
@@ -52,6 +54,7 @@ public sealed class UsersController : ControllerBase
         }
         catch (InvalidOperationException ex)
         {
+            _logger.LogError(ex, "Erro ao criar User (GHOST)");
             return Conflict(new { message = ex.Message });
         }
     }
@@ -73,6 +76,7 @@ public sealed class UsersController : ControllerBase
         }
         catch (InvalidOperationException ex)
         {
+            _logger.LogError(ex, "Erro ao atualizar User {UserId} (GHOST)", id);
             return Conflict(new { message = ex.Message });
         }
     }

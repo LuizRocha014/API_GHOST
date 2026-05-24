@@ -12,8 +12,13 @@ namespace Folha.Api.Controllers;
 public sealed class GoalsController : ControllerBase
 {
     private readonly IGoalService _service;
+    private readonly ILogger<GoalsController> _logger;
 
-    public GoalsController(IGoalService service) => _service = service;
+    public GoalsController(IGoalService service, ILogger<GoalsController> logger)
+    {
+        _service = service;
+        _logger = logger;
+    }
 
     [HttpGet]
     public async Task<ActionResult<IReadOnlyList<GoalDto>>> GetAll(CancellationToken cancellationToken) =>
@@ -36,6 +41,7 @@ public sealed class GoalsController : ControllerBase
         }
         catch (InvalidOperationException ex)
         {
+            _logger.LogError(ex, "Erro ao criar Goal para usuário {UserId}", this.GetUserId());
             return BadRequest(new { error = ex.Message });
         }
     }
@@ -50,6 +56,7 @@ public sealed class GoalsController : ControllerBase
         }
         catch (InvalidOperationException ex)
         {
+            _logger.LogError(ex, "Erro ao atualizar Goal {GoalId} para usuário {UserId}", id, this.GetUserId());
             return BadRequest(new { error = ex.Message });
         }
     }

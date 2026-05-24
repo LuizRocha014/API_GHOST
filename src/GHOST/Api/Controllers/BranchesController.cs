@@ -11,10 +11,12 @@ namespace Api.Controllers;
 public sealed class BranchesController : ControllerBase
 {
     private readonly IBranchService _branches;
+    private readonly ILogger<BranchesController> _logger;
 
-    public BranchesController(IBranchService branches)
+    public BranchesController(IBranchService branches, ILogger<BranchesController> logger)
     {
         _branches = branches;
+        _logger = logger;
     }
 
     /// <summary>Lista filiais, opcionalmente filtradas por empresa.</summary>
@@ -54,6 +56,7 @@ public sealed class BranchesController : ControllerBase
         }
         catch (InvalidOperationException ex)
         {
+            _logger.LogError(ex, "Erro ao criar Branch");
             return BadRequest(new { error = ex.Message });
         }
     }

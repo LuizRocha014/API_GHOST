@@ -11,10 +11,12 @@ namespace Api.Controllers;
 public sealed class UserBranchAccessesController : ControllerBase
 {
     private readonly IUserBranchAccessService _accesses;
+    private readonly ILogger<UserBranchAccessesController> _logger;
 
-    public UserBranchAccessesController(IUserBranchAccessService accesses)
+    public UserBranchAccessesController(IUserBranchAccessService accesses, ILogger<UserBranchAccessesController> logger)
     {
         _accesses = accesses;
+        _logger = logger;
     }
 
     /// <summary>Lista acessos ativos do usuário.</summary>
@@ -71,6 +73,7 @@ public sealed class UserBranchAccessesController : ControllerBase
         }
         catch (InvalidOperationException ex)
         {
+            _logger.LogError(ex, "Erro ao criar UserBranchAccess para usuário {UserId}", userId);
             return BadRequest(new { message = ex.Message });
         }
     }

@@ -12,8 +12,13 @@ namespace Folha.Api.Controllers;
 public sealed class CreditCardsController : ControllerBase
 {
     private readonly ICreditCardService _service;
+    private readonly ILogger<CreditCardsController> _logger;
 
-    public CreditCardsController(ICreditCardService service) => _service = service;
+    public CreditCardsController(ICreditCardService service, ILogger<CreditCardsController> logger)
+    {
+        _service = service;
+        _logger = logger;
+    }
 
     [HttpGet]
     public async Task<ActionResult<IReadOnlyList<CreditCardDto>>> GetAll(CancellationToken cancellationToken) =>
@@ -36,6 +41,7 @@ public sealed class CreditCardsController : ControllerBase
         }
         catch (InvalidOperationException ex)
         {
+            _logger.LogError(ex, "Erro ao criar CreditCard para usuário {UserId}", this.GetUserId());
             return BadRequest(new { error = ex.Message });
         }
     }
@@ -50,6 +56,7 @@ public sealed class CreditCardsController : ControllerBase
         }
         catch (InvalidOperationException ex)
         {
+            _logger.LogError(ex, "Erro ao atualizar CreditCard {CreditCardId} para usuário {UserId}", id, this.GetUserId());
             return BadRequest(new { error = ex.Message });
         }
     }

@@ -47,7 +47,7 @@ public sealed class BillService : IBillService
             Description = request.Description.Trim(),
             Amount = request.Amount,
             Kind = kind,
-            DueDate = request.DueDate.Date,
+            DueDate = request.DueDate?.Date,
             Status = "pending",
             PaidAmount = 0,
             InstallmentCurrent = request.InstallmentCurrent,
@@ -91,7 +91,7 @@ public sealed class BillService : IBillService
         entity.Description = request.Description.Trim();
         entity.Amount = request.Amount;
         entity.Kind = kind;
-        entity.DueDate = request.DueDate.Date;
+        entity.DueDate = request.DueDate?.Date;
         entity.Status = status;
         entity.PaidAmount = paidAmount;
         entity.PaidAt = request.PaidAt ?? (isSettling ? DateTime.UtcNow : null);

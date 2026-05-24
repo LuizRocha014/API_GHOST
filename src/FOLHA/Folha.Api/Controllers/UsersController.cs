@@ -11,8 +11,13 @@ namespace Folha.Api.Controllers;
 public sealed class UsersController : ControllerBase
 {
     private readonly IUserService _service;
+    private readonly ILogger<UsersController> _logger;
 
-    public UsersController(IUserService service) => _service = service;
+    public UsersController(IUserService service, ILogger<UsersController> logger)
+    {
+        _service = service;
+        _logger = logger;
+    }
 
     /// <summary>Lista usuários ativos.</summary>
     [HttpGet]
@@ -50,6 +55,7 @@ public sealed class UsersController : ControllerBase
         }
         catch (InvalidOperationException ex)
         {
+            _logger.LogError(ex, "Erro ao criar User com email {Email}", request.Email);
             return BadRequest(new { error = ex.Message });
         }
     }
@@ -66,6 +72,7 @@ public sealed class UsersController : ControllerBase
         }
         catch (InvalidOperationException ex)
         {
+            _logger.LogError(ex, "Erro ao atualizar User {UserId}", id);
             return BadRequest(new { error = ex.Message });
         }
     }
