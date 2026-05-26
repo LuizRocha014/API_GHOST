@@ -4,7 +4,7 @@ public sealed class CreditCard
 {
     public Guid Id { get; set; }
     public Guid UserId { get; set; }
-    public Guid AccountId { get; set; }
+    public Guid? AccountId { get; set; }
     public string Name { get; set; } = string.Empty;
     public string Brand { get; set; } = "other";
     public string? LastFour { get; set; }

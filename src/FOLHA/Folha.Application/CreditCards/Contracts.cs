@@ -3,7 +3,7 @@ namespace Folha.Application.CreditCards;
 public sealed record CreditCardDto(
     Guid Id,
     Guid UserId,
-    Guid AccountId,
+    Guid? AccountId,
     string Name,
     string Brand,
     string? LastFour,
@@ -15,22 +15,23 @@ public sealed record CreditCardDto(
     DateTime UpdatedAt);
 
 public sealed record CreateCreditCardRequest(
-    Guid AccountId,
     string Name,
     string Brand,
     string? LastFour,
     decimal CreditLimit,
     byte ClosingDay,
     byte DueDay,
+    // Conta vinculada é opcional — o cartão pode existir sem conta associada.
+    Guid? AccountId = null,
     // Id opcional gerado pelo cliente (offline-first).
     Guid? Id = null);
 
 public sealed record UpdateCreditCardRequest(
-    Guid AccountId,
     string Name,
     string Brand,
     string? LastFour,
     decimal CreditLimit,
     byte ClosingDay,
     byte DueDay,
-    bool IsArchived);
+    bool IsArchived,
+    Guid? AccountId = null);

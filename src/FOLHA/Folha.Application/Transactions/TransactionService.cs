@@ -95,8 +95,8 @@ public sealed class TransactionService : ITransactionService
             throw new InvalidOperationException("Amount precisa ser positivo.");
         if (!ValidKinds.Contains(kind))
             throw new InvalidOperationException("Kind inválido.");
-        if (accountId is null && creditCardId is null)
-            throw new InvalidOperationException("Informe AccountId ou CreditCardId.");
+        // Gastos avulsos (Pix/dinheiro) podem não ter conta nem cartão — permitido.
+        // (account_id/credit_card_id ficam nulos; o CHECK CK_FOLHA_Tx_target foi removido na migration 009.)
         if (installNumber.HasValue && installTotal.HasValue && (installNumber < 1 || installNumber > installTotal))
             throw new InvalidOperationException("Parcela inválida.");
     }

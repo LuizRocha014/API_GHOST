@@ -41,6 +41,8 @@ public sealed class GoalService : IGoalService
             ColorHex = string.IsNullOrWhiteSpace(request.ColorHex) ? null : request.ColorHex.Trim(),
             IsCompleted = false,
             IsArchived = false,
+            MonthlyYieldPercent = request.MonthlyYieldPercent,
+            IsCdb = request.IsCdb,
             CreatedAt = utc,
             UpdatedAt = utc
         };
@@ -67,6 +69,8 @@ public sealed class GoalService : IGoalService
         entity.Icon = string.IsNullOrWhiteSpace(request.Icon) ? null : request.Icon.Trim();
         entity.ColorHex = string.IsNullOrWhiteSpace(request.ColorHex) ? null : request.ColorHex.Trim();
         entity.IsArchived = request.IsArchived;
+        entity.MonthlyYieldPercent = request.MonthlyYieldPercent;
+        entity.IsCdb = request.IsCdb;
         if (request.IsCompleted && !entity.IsCompleted)
         {
             entity.IsCompleted = true;

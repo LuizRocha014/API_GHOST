@@ -14,6 +14,8 @@ public sealed record GoalDto(
     bool IsCompleted,
     DateTime? CompletedAt,
     bool IsArchived,
+    decimal? MonthlyYieldPercent,
+    bool IsCdb,
     DateTime CreatedAt,
     DateTime UpdatedAt);
 
@@ -25,6 +27,8 @@ public sealed record CreateGoalRequest(
     DateTime? TargetDate,
     string? Icon,
     string? ColorHex,
+    decimal? MonthlyYieldPercent = null,
+    bool IsCdb = false,
     // Id opcional gerado pelo cliente (offline-first).
     Guid? Id = null);
 
@@ -38,4 +42,6 @@ public sealed record UpdateGoalRequest(
     string? Icon,
     string? ColorHex,
     bool IsCompleted,
-    bool IsArchived);
+    bool IsArchived,
+    decimal? MonthlyYieldPercent = null,
+    bool IsCdb = false);

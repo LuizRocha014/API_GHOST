@@ -15,6 +15,8 @@ public sealed class Goal
     public bool IsCompleted { get; set; }
     public DateTime? CompletedAt { get; set; }
     public bool IsArchived { get; set; }
+    public decimal? MonthlyYieldPercent { get; set; }
+    public bool IsCdb { get; set; }
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
 }

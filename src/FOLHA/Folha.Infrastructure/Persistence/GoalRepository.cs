@@ -16,6 +16,7 @@ public sealed class GoalRepository : IGoalRepository
         current_amount AS CurrentAmount, target_date AS TargetDate,
         icon AS Icon, color_hex AS ColorHex, is_completed AS IsCompleted,
         completed_at AS CompletedAt, is_archived AS IsArchived,
+        monthly_yield_percent AS MonthlyYieldPercent, is_cdb AS IsCdb,
         created_at AS CreatedAt, updated_at AS UpdatedAt
     """;
 
@@ -42,11 +43,11 @@ public sealed class GoalRepository : IGoalRepository
             INSERT INTO FOLHA_Goals
                 (id, user_id, account_id, title, description, target_amount, current_amount,
                  target_date, icon, color_hex, is_completed, completed_at, is_archived,
-                 created_at, updated_at)
+                 monthly_yield_percent, is_cdb, created_at, updated_at)
             VALUES
                 (@Id, @UserId, @AccountId, @Title, @Description, @TargetAmount, @CurrentAmount,
                  @TargetDate, @Icon, @ColorHex, @IsCompleted, @CompletedAt, @IsArchived,
-                 @CreatedAt, @UpdatedAt)
+                 @MonthlyYieldPercent, @IsCdb, @CreatedAt, @UpdatedAt)
             """;
         await _session.Connection
             .ExecuteAsync(new CommandDefinition(sql, goal, cancellationToken: cancellationToken))
@@ -62,7 +63,8 @@ public sealed class GoalRepository : IGoalRepository
                 target_amount = @TargetAmount, current_amount = @CurrentAmount,
                 target_date = @TargetDate, icon = @Icon, color_hex = @ColorHex,
                 is_completed = @IsCompleted, completed_at = @CompletedAt,
-                is_archived = @IsArchived, updated_at = @UpdatedAt
+                is_archived = @IsArchived, monthly_yield_percent = @MonthlyYieldPercent,
+                is_cdb = @IsCdb, updated_at = @UpdatedAt
             WHERE id = @Id AND user_id = @UserId
             """;
         var n = await _session.Connection
