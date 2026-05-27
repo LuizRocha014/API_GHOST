@@ -1,5 +1,7 @@
 using Folha.Application.Abstractions;
+using Folha.Application.Auth;
 using Folha.Domain.Entities;
+using Microsoft.Extensions.Options;
 
 namespace Folha.Application.Users;
 
@@ -7,11 +9,19 @@ public sealed class UserService : IUserService
 {
     private readonly IUserRepository _repository;
     private readonly IPasswordHasher _passwordHasher;
+    private readonly IEmailVerificationService _emailVerification;
+    private readonly EmailOptions _emailOptions;
 
-    public UserService(IUserRepository repository, IPasswordHasher passwordHasher)
+    public UserService(
+        IUserRepository repository,
+        IPasswordHasher passwordHasher,
+        IEmailVerificationService emailVerification,
+        IOptions<EmailOptions> emailOptions)
     {
         _repository = repository;
         _passwordHasher = passwordHasher;
+        _emailVerification = emailVerification;
+        _emailOptions = emailOptions.Value;
     }
 
     public async Task<IReadOnlyList<UserDto>> ListAsync(CancellationToken cancellationToken = default)
@@ -50,12 +60,18 @@ public sealed class UserService : IUserService
             Locale = string.IsNullOrWhiteSpace(request.Locale) ? "pt-BR" : request.Locale.Trim(),
             CurrencyCode = string.IsNullOrWhiteSpace(request.CurrencyCode) ? "BRL" : request.CurrencyCode.Trim().ToUpperInvariant(),
             IsActive = true,
-            EmailVerified = false,
+            // Com verificação desligada, já nasce verificado (login imediato).
+            EmailVerified = !_emailOptions.RequireVerification,
             CreatedAt = utc,
             UpdatedAt = utc
         };
 
         var created = await _repository.AddAsync(entity, cancellationToken).ConfigureAwait(false);
+
+        // Só dispara o código quando a verificação está habilitada.
+        if (_emailOptions.RequireVerification)
+            await _emailVerification.SendCodeAsync(created, cancellationToken).ConfigureAwait(false);
+
         return created.ToDto();
     }
 

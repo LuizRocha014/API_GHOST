@@ -106,4 +106,12 @@ public sealed class UserRepository : IUserRepository
             .ExecuteAsync(new CommandDefinition(sql, new { Id = id, Now = DateTime.UtcNow }, cancellationToken: cancellationToken))
             .ConfigureAwait(false);
     }
+
+    public async Task MarkEmailVerifiedAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        const string sql = "UPDATE FOLHA_Users SET email_verified = 1, updated_at = @Now WHERE id = @Id";
+        await _session.Connection
+            .ExecuteAsync(new CommandDefinition(sql, new { Id = id, Now = DateTime.UtcNow }, cancellationToken: cancellationToken))
+            .ConfigureAwait(false);
+    }
 }

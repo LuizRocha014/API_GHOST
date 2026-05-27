@@ -1,4 +1,6 @@
+using Folha.Application;
 using Folha.Application.Abstractions;
+using Folha.Infrastructure.Email;
 using Folha.Infrastructure.Persistence;
 using Folha.Infrastructure.Security;
 using Microsoft.Extensions.Configuration;
@@ -14,6 +16,13 @@ public static class DependencyInjection
 
         services.AddSingleton<IPasswordHasher, PasswordHasher>();
         services.AddSingleton<IJwtTokenService, JwtTokenService>();
+
+        // E-mail: SMTP real quando configurado; senão, fallback que loga o código (dev).
+        var smtpHost = configuration.GetSection($"{EmailOptions.SectionName}:Smtp")["Host"];
+        if (!string.IsNullOrWhiteSpace(smtpHost))
+            services.AddSingleton<IEmailSender, SmtpEmailSender>();
+        else
+            services.AddSingleton<IEmailSender, LoggingEmailSender>();
 
         services.AddScoped<IUserRepository, UserRepository>();
         services.AddScoped<IAccountRepository, AccountRepository>();
@@ -31,6 +40,7 @@ public static class DependencyInjection
         services.AddScoped<INotificationRepository, NotificationRepository>();
         services.AddScoped<ISessionRepository, SessionRepository>();
         services.AddScoped<IRefreshTokenRepository, RefreshTokenRepository>();
+        services.AddScoped<IEmailVerificationRepository, EmailVerificationRepository>();
         services.AddScoped<MigrationRunner>();
         return services;
     }

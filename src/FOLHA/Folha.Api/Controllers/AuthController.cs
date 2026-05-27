@@ -23,17 +23,59 @@ public sealed class AuthController : ControllerBase
     [AllowAnonymous]
     [ProducesResponseType(typeof(LoginResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<ActionResult<LoginResponse>> Login([FromBody] LoginRequest request, CancellationToken cancellationToken)
     {
         var deviceId = Request.Headers[DeviceIdHeader].ToString();
         var userAgent = Request.Headers.UserAgent.ToString();
         var ip = HttpContext.Connection.RemoteIpAddress?.ToString();
 
-        var response = await _authService.LoginAsync(request, NullIfEmpty(deviceId), NullIfEmpty(userAgent), ip, cancellationToken);
-        if (response is null)
-            return Unauthorized(new { error = "Email ou senha inválidos." });
+        try
+        {
+            var response = await _authService.LoginAsync(request, NullIfEmpty(deviceId), NullIfEmpty(userAgent), ip, cancellationToken);
+            if (response is null)
+                return Unauthorized(new { error = "Email ou senha inválidos." });
 
-        return Ok(response);
+            return Ok(response);
+        }
+        catch (EmailNotVerifiedException ex)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new { error = ex.Message, code = "EMAIL_NOT_VERIFIED", email = ex.Email });
+        }
+    }
+
+    /// <summary>Confirma o código de 6 dígitos enviado por e-mail e já devolve o par de tokens.</summary>
+    [HttpPost("verify-email")]
+    [AllowAnonymous]
+    [ProducesResponseType(typeof(LoginResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<LoginResponse>> VerifyEmail([FromBody] VerifyEmailRequest request, CancellationToken cancellationToken)
+    {
+        var deviceId = Request.Headers[DeviceIdHeader].ToString();
+        var userAgent = Request.Headers.UserAgent.ToString();
+        var ip = HttpContext.Connection.RemoteIpAddress?.ToString();
+
+        var result = await _authService.VerifyEmailAsync(
+            request.Email, request.Code, NullIfEmpty(deviceId), NullIfEmpty(userAgent), ip, cancellationToken);
+
+        return result.Status switch
+        {
+            EmailVerificationStatus.Success => Ok(result.Login),
+            EmailVerificationStatus.InvalidCode => BadRequest(new { error = "Código inválido. Confira os dígitos.", code = "INVALID_CODE" }),
+            EmailVerificationStatus.Expired => BadRequest(new { error = "Código expirado. Reenvie um novo.", code = "EXPIRED" }),
+            EmailVerificationStatus.TooManyAttempts => BadRequest(new { error = "Muitas tentativas. Reenvie um novo código.", code = "TOO_MANY_ATTEMPTS" }),
+            _ => BadRequest(new { error = "Nenhum código pendente. Reenvie um novo.", code = "NOT_FOUND" }),
+        };
+    }
+
+    /// <summary>Reenvia o código de verificação. Responde 204 sempre (não revela se o e-mail existe).</summary>
+    [HttpPost("resend-code")]
+    [AllowAnonymous]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    public async Task<IActionResult> ResendCode([FromBody] ResendCodeRequest request, CancellationToken cancellationToken)
+    {
+        await _authService.ResendCodeAsync(request.Email, cancellationToken);
+        return NoContent();
     }
 
     /// <summary>Troca um refresh token válido por um novo par access/refresh.</summary>

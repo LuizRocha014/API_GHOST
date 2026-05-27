@@ -12,4 +12,5 @@ public interface IUserRepository
     Task<bool> UpdateAsync(User user, CancellationToken cancellationToken = default);
     Task<bool> DeactivateAsync(Guid id, CancellationToken cancellationToken = default);
     Task UpdateLastLoginAsync(Guid id, CancellationToken cancellationToken = default);
+    Task MarkEmailVerifiedAsync(Guid id, CancellationToken cancellationToken = default);
 }

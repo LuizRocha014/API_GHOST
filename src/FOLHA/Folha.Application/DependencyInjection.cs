@@ -22,6 +22,7 @@ public static class DependencyInjection
     public static IServiceCollection AddFolhaApplication(this IServiceCollection services)
     {
         services.AddScoped<IAuthService, AuthService>();
+        services.AddScoped<IEmailVerificationService, EmailVerificationService>();
         services.AddScoped<IUserService, UserService>();
         services.AddScoped<IAccountService, AccountService>();
         services.AddScoped<ICreditCardService, CreditCardService>();

@@ -14,20 +14,26 @@ public sealed class AuthService : IAuthService
     private readonly IRefreshTokenRepository _refreshTokens;
     private readonly IPasswordHasher _passwordHasher;
     private readonly IJwtTokenService _jwt;
+    private readonly IEmailVerificationService _emailVerification;
     private readonly JwtOptions _jwtOptions;
+    private readonly EmailOptions _emailOptions;
 
     public AuthService(
         IUserRepository users,
         IRefreshTokenRepository refreshTokens,
         IPasswordHasher passwordHasher,
         IJwtTokenService jwt,
-        IOptions<JwtOptions> jwtOptions)
+        IEmailVerificationService emailVerification,
+        IOptions<JwtOptions> jwtOptions,
+        IOptions<EmailOptions> emailOptions)
     {
         _users = users;
         _refreshTokens = refreshTokens;
         _passwordHasher = passwordHasher;
         _jwt = jwt;
+        _emailVerification = emailVerification;
         _jwtOptions = jwtOptions.Value;
+        _emailOptions = emailOptions.Value;
     }
 
     public async Task<LoginResponse?> LoginAsync(LoginRequest request, string? deviceId, string? userAgent, string? ipAddress, CancellationToken cancellationToken = default)
@@ -40,9 +46,30 @@ public sealed class AuthService : IAuthService
         if (!_passwordHasher.Verify(request.Password, user.PasswordHash))
             return null;
 
+        if (_emailOptions.RequireVerification && !user.EmailVerified)
+        {
+            // Credenciais OK, mas e-mail pendente: reenvia o código e sinaliza ao chamador.
+            await _emailVerification.SendCodeAsync(user, cancellationToken).ConfigureAwait(false);
+            throw new EmailNotVerifiedException(user.Email);
+        }
+
         await _users.UpdateLastLoginAsync(user.Id, cancellationToken).ConfigureAwait(false);
         return await BuildLoginResponseAsync(user, deviceId, userAgent, ipAddress, cancellationToken).ConfigureAwait(false);
     }
+
+    public async Task<VerifyEmailResult> VerifyEmailAsync(string email, string code, string? deviceId, string? userAgent, string? ipAddress, CancellationToken cancellationToken = default)
+    {
+        var (status, user) = await _emailVerification.VerifyAsync(email, code, cancellationToken).ConfigureAwait(false);
+        if (status != EmailVerificationStatus.Success || user is null)
+            return new VerifyEmailResult(status, null);
+
+        await _users.UpdateLastLoginAsync(user.Id, cancellationToken).ConfigureAwait(false);
+        var login = await BuildLoginResponseAsync(user, deviceId, userAgent, ipAddress, cancellationToken).ConfigureAwait(false);
+        return new VerifyEmailResult(EmailVerificationStatus.Success, login);
+    }
+
+    public Task<bool> ResendCodeAsync(string email, CancellationToken cancellationToken = default) =>
+        _emailVerification.ResendAsync(email, cancellationToken);
 
     public async Task<LoginResponse?> RefreshAsync(string refreshToken, string? deviceId, string? userAgent, string? ipAddress, CancellationToken cancellationToken = default)
     {
