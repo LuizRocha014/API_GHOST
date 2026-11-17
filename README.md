@@ -127,11 +127,15 @@ Abra o arquivo no navegador ou use **Imprimir → Salvar como PDF** para exporta
 
 ## Migrações (EF Core)
 
-As migrações ficam em `src/Infrastructure/Persistence/Migrations`. Para criar o banco ou atualizar o esquema manualmente (além do `MigrateAsync` na subida da API):
+As migrações ficam em `src/Infrastructure/Persistence/Migrations`. Para criar o banco ou atualizar o esquema manualmente (além do `MigrateAsync` na subida da API), com a API parada:
 
 ```bash
-dotnet ef database update --project src/Infrastructure --startup-project src/Api
+dotnet ef database update --project src/Infrastructure --startup-project src/Api --connection "Server=localhost,1433;Database=AgendaGhost;Trusted_Connection=True;TrustServerCertificate=True"
 ```
+
+O `--connection` é obrigatório: sem ele o `dotnet ef` usa o `AppDbContextFactory`, que aponta para um LocalDB só usado
+para gerar migrações. Para apagar o banco local e recomeçar do seed, troque `database update` por `database drop --force`.
+Sem a ferramenta instalada, `dotnet dnx dotnet-ef@10.0.1 --yes <comando>` roda sem instalar.
 
 Para adicionar uma nova migração após alterar o modelo:
 
