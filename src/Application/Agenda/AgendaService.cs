@@ -37,6 +37,31 @@ public interface IAgendaService
     Task<ClientDto?> GetClientAsync(Guid branchId, string phone, CancellationToken ct = default);
     Task<IReadOnlyList<ClientDto>> ListClientsAsync(Guid branchId, CancellationToken ct = default);
     Task<ClientDto> UpsertClientAsync(Guid branchId, string phone, ClientRequest request, CancellationToken ct = default);
+
+    Task<ClientDto> GetClientByIdAsync(Guid branchId, Guid id, CancellationToken ct = default);
+    Task<ClientDto> CreateClientAsync(Guid branchId, ClientFormRequest request, CancellationToken ct = default);
+    Task<ClientDto> UpdateClientAsync(Guid branchId, Guid id, ClientFormRequest request, CancellationToken ct = default);
+    Task DeleteClientAsync(Guid branchId, Guid id, CancellationToken ct = default);
+    Task<IReadOnlyList<BookingDto>> ClientBookingsAsync(Guid branchId, Guid id, CancellationToken ct = default);
+
+    Task<IReadOnlyList<LoyaltyPlanDto>> ListPlansAsync(Guid branchId, CancellationToken ct = default);
+    Task<LoyaltyPlanDto> CreatePlanAsync(Guid branchId, LoyaltyPlanRequest request, CancellationToken ct = default);
+    Task<LoyaltyPlanDto> UpdatePlanAsync(Guid branchId, Guid id, LoyaltyPlanRequest request, CancellationToken ct = default);
+    Task DeletePlanAsync(Guid branchId, Guid id, CancellationToken ct = default);
+
+    /// <summary>Planos do cliente com o uso no mês de <paramref name="date"/> (nulo = mês atual).</summary>
+    Task<IReadOnlyList<ClientPlanDto>> ListClientPlansAsync(Guid branchId, Guid clientId, string? date, CancellationToken ct = default);
+    Task<ClientPlanDto> CreateClientPlanAsync(Guid branchId, Guid clientId, ClientPlanRequest request, CancellationToken ct = default);
+    Task<ClientPlanDto> UpdateClientPlanAsync(Guid branchId, Guid clientId, Guid id, ClientPlanRequest request, CancellationToken ct = default);
+
+    /// <summary>Encerra o plano hoje: os atendimentos de hoje ainda contam nele.</summary>
+    Task<ClientPlanDto> EndClientPlanAsync(Guid branchId, Guid clientId, Guid id, CancellationToken ct = default);
+
+    /// <summary>Marca a mensalidade do mês ('AAAA-MM') como paga, com o valor atual do plano. 409 se já está paga.</summary>
+    Task<ClientPlanDto> PayChargeAsync(Guid branchId, Guid clientId, Guid id, string month, CancellationToken ct = default);
+
+    /// <summary>Desfaz o pagamento da mensalidade do mês (volta a pendente).</summary>
+    Task<ClientPlanDto> UndoChargeAsync(Guid branchId, Guid clientId, Guid id, string month, CancellationToken ct = default);
 }
 
 public sealed class AgendaService(IAgendaRepository repo, IAgendaClock clock, IReminderSender sender) : IAgendaService
@@ -52,6 +77,9 @@ public sealed class AgendaService(IAgendaRepository repo, IAgendaClock clock, IR
     public const int MaxReasonLength = 200;
     public const int MaxPhoneLength = 15;
     public const int MaxErrorLength = 1000;
+    public const int MaxColorLength = 40;
+    public const int MaxVehiclesPerClient = 50;
+    public const int ClientHistoryLimit = 200;
 
     private static string Truncate(string text, int max) => text.Length > max ? text[..max] : text;
 
@@ -187,6 +215,9 @@ public sealed class AgendaService(IAgendaRepository repo, IAgendaClock clock, IR
         var origin = req.Origin == BookingOrigins.WhatsApp ? BookingOrigins.WhatsApp : BookingOrigins.Counter;
         var duration = service.DurationFor(req.VehicleType);
         var now = clock.NowLocal;
+        var clientId = OptionalId(req.ClientId, "Cliente");
+        var vehicleId = OptionalId(req.VehicleId, "Carro");
+        if (vehicleId is not null && clientId is null) throw new AgendaValidationException("Escolha o cliente do carro.");
 
         return await repo.InDayTransactionAsync(branchId, date, async tx =>
         {
@@ -222,40 +253,89 @@ public sealed class AgendaService(IAgendaRepository repo, IAgendaClock clock, IR
                 UpdatedAt = utc,
                 Active = true,
             };
-            await tx.InsertBookingAsync(booking);
 
-            if (phone.Length > 0)
+            AgendaClient? client = null;
+            if (clientId is { } cid)
             {
-                var variants = AgendaFormat.PhoneVariants(phone);
-                var client = await tx.GetClientAsync(variants);
-                if (client is null)
-                {
-                    client = new AgendaClient
-                    {
-                        Id = Guid.NewGuid(),
-                        BranchId = branchId,
-                        Phone = phone,
-                        Name = booking.ClientName,
-                        ReminderOptIn = req.ReminderOptIn,
-                        OptInAt = req.ReminderOptIn ? now : null,
-                        CreatedAt = utc,
-                        UpdatedAt = utc,
-                        Active = true,
-                    };
-                }
-                else
-                {
-                    if (client.ReminderOptIn != req.ReminderOptIn) client.OptInAt = req.ReminderOptIn ? now : null;
-                    client.ReminderOptIn = req.ReminderOptIn;
-                    client.Name = booking.ClientName;
-                    client.UpdatedAt = utc;
-                }
-                await tx.UpsertClientAsync(client);
-                if (client.ReminderOptIn) await CreateReminderAsync(tx, cfg, booking, now);
+                client = await tx.GetClientByIdAsync(cid) ?? throw new AgendaValidationException("Cliente não encontrado.");
+                if (client.Phone.Length == 0 && phone.Length > 0 && await PhoneOwnerAsync(tx, phone, client.Id) is null) client.Phone = phone;
+            }
+            else if (phone.Length > 0)
+            {
+                client = await tx.GetClientAsync(AgendaFormat.PhoneVariants(phone))
+                         ?? new AgendaClient { Id = Guid.NewGuid(), BranchId = branchId, Phone = phone, CreatedAt = utc, Active = true };
             }
 
+            if (client is not null)
+            {
+                if (client.ReminderOptIn != req.ReminderOptIn) client.OptInAt = req.ReminderOptIn ? now : null;
+                client.ReminderOptIn = req.ReminderOptIn;
+                client.Name = booking.ClientName;
+                client.UpdatedAt = utc;
+                await tx.UpsertClientAsync(client);
+                booking.ClientId = client.Id;
+                booking.VehicleId = await ResolveVehicleAsync(tx, client, vehicleId, booking, utc);
+                if (req.UsePlan) await ApplyPlanAsync(tx, booking, null);
+            }
+
+            await tx.InsertBookingAsync(booking);
+            if (phone.Length > 0 && client is { ReminderOptIn: true }) await CreateReminderAsync(tx, cfg, booking, now);
             return booking.ToDto();
         }, ct);
+    }
+
+    private static Guid? OptionalId(string? value, string field) =>
+        string.IsNullOrWhiteSpace(value) ? null
+        : Guid.TryParse(value, out var id) ? id
+        : throw new AgendaValidationException($"{field} inválido.");
+
+    /// <summary>Outro cliente ativo com este WhatsApp (com ou sem o nono dígito), ou nulo.</summary>
+    private static async Task<AgendaClient?> PhoneOwnerAsync(IAgendaDayTransaction tx, string phone, Guid? self)
+    {
+        if (phone.Length == 0) return null;
+        var owner = await tx.GetClientAsync(AgendaFormat.PhoneVariants(phone));
+        return owner is not null && owner.Id != self ? owner : null;
+    }
+
+    /// <summary>
+    /// Carro do agendamento entre os carros do cliente: o escolhido, ou o da mesma placa (sem placa, o do mesmo modelo).
+    /// Carro que ainda não existe entra no cadastro do cliente.
+    /// </summary>
+    private static async Task<Guid?> ResolveVehicleAsync(IAgendaDayTransaction tx, AgendaClient client, Guid? vehicleId, AgendaBooking b, DateTime utc)
+    {
+        var vehicles = await tx.ClientVehiclesAsync(client.Id);
+        if (vehicleId is { } vid)
+            return vehicles.Any(v => v.Id == vid) ? vid : throw new AgendaValidationException("Esse carro não é deste cliente.");
+        if (b.Plate.Length == 0 && b.Vehicle.Length == 0) return null;
+
+        var found = b.Plate.Length > 0
+            ? vehicles.FirstOrDefault(v => v.Plate == b.Plate)
+            : vehicles.FirstOrDefault(v => v.Plate.Length == 0 && string.Equals(v.Vehicle, b.Vehicle, StringComparison.OrdinalIgnoreCase));
+        if (found is not null)
+        {
+            if (found.Vehicle.Length == 0 && b.Vehicle.Length > 0)
+            {
+                found.Vehicle = b.Vehicle;
+                found.UpdatedAt = utc;
+                await tx.UpsertVehicleAsync(found);
+            }
+            return found.Id;
+        }
+
+        var created = new AgendaClientVehicle
+        {
+            Id = Guid.NewGuid(),
+            BranchId = client.BranchId,
+            ClientId = client.Id,
+            Vehicle = b.Vehicle,
+            Plate = b.Plate,
+            VehicleType = b.VehicleType,
+            CreatedAt = utc,
+            UpdatedAt = utc,
+            Active = true,
+        };
+        await tx.UpsertVehicleAsync(created);
+        return created.Id;
     }
 
     private static async Task CreateReminderAsync(IAgendaDayTransaction tx, AgendaConfigModel cfg, AgendaBooking booking, DateTime nowLocal)
@@ -350,6 +430,8 @@ public sealed class AgendaService(IAgendaRepository repo, IAgendaClock clock, IR
                 Status = BookingStatuses.Scheduled,
                 Origin = old.Origin,
                 RescheduledFrom = old.Id,
+                ClientId = old.ClientId,
+                VehicleId = old.VehicleId,
                 CreatedAt = utc,
                 UpdatedAt = utc,
                 Active = true,
@@ -357,6 +439,13 @@ public sealed class AgendaService(IAgendaRepository repo, IAgendaClock clock, IR
             // O horário antigo só é liberado junto com a reserva do novo (mesma transação).
             await tx.UpdateBookingStatusAsync(old.Id, BookingStatuses.Canceled, utc);
             await CancelPendingRemindersAsync(tx, old.Id);
+            if (old.ClientPlanId is { } planId)
+            {
+                // A vez do mês antigo foi devolvida com o cancelamento; no dia novo o plano precisa valer e ter vez sobrando.
+                created.ClientPlanId = null;
+                created.Price = service.PriceFor(old.VehicleType);
+                await ApplyPlanAsync(tx, created, planId);
+            }
             await tx.InsertBookingAsync(created);
             if (created.Phone.Length > 0)
             {
@@ -504,11 +593,178 @@ public sealed class AgendaService(IAgendaRepository repo, IAgendaClock clock, IR
 
     /* ---------- Clientes ---------- */
 
-    public async Task<ClientDto?> GetClientAsync(Guid branchId, string phone, CancellationToken ct = default) =>
-        (await repo.GetClientAsync(branchId, AgendaFormat.PhoneVariants(phone), ct))?.ToDto();
+    /// <summary>Por cliente: soma das mensalidades pagas e quantos meses de plano estão em aberto.</summary>
+    private async Task<Dictionary<Guid, (decimal Paid, int Pending)>> PlanMoneyAsync(Guid branchId, Guid? clientId, CancellationToken ct)
+    {
+        var plans = await repo.ListBranchClientPlansAsync(branchId, clientId, ct);
+        var payments = await repo.ListPlanPaymentsAsync(branchId, clientId, ct);
+        var today = clock.NowLocal.Date;
+        var byPlan = payments.ToLookup(p => p.ClientPlanId);
+        return plans.GroupBy(p => p.ClientId).ToDictionary(
+            g => g.Key,
+            g => (g.Sum(p => byPlan[p.Id].Sum(x => x.Amount)),
+                  g.Sum(p => LoyaltyRules.Charges(p, byPlan[p.Id], today).Count(c => c.Status == "pending"))));
+    }
 
-    public async Task<IReadOnlyList<ClientDto>> ListClientsAsync(Guid branchId, CancellationToken ct = default) =>
-        (await repo.ListClientsAsync(branchId, ct)).Select(c => c.ToDto()).ToList();
+    private async Task<ClientDto> ClientDtoAsync(Guid branchId, AgendaClient c, CancellationToken ct)
+    {
+        var vehicles = await repo.ListClientVehiclesAsync(branchId, c.Id, ct);
+        var stats = await repo.ClientStatsAsync(branchId, clock.NowLocal.Date, c.Id, ct);
+        var plans = await repo.ClientPlanNamesAsync(branchId, c.Id, ct);
+        var money = (await PlanMoneyAsync(branchId, c.Id, ct)).GetValueOrDefault(c.Id);
+        return c.ToDto(vehicles, stats.FirstOrDefault(), plans.Select(p => p.Name).ToList(), money.Paid, money.Pending);
+    }
+
+    private async Task<ClientDto> ClientDtoAsync(Guid branchId, Guid id, CancellationToken ct) =>
+        await ClientDtoAsync(branchId, await repo.GetClientByIdAsync(branchId, id, ct) ?? throw new AgendaNotFoundException("Cliente não encontrado."), ct);
+
+    public async Task<ClientDto?> GetClientAsync(Guid branchId, string phone, CancellationToken ct = default)
+    {
+        var c = await repo.GetClientAsync(branchId, AgendaFormat.PhoneVariants(phone), ct);
+        return c is null ? null : await ClientDtoAsync(branchId, c, ct);
+    }
+
+    public async Task<IReadOnlyList<ClientDto>> ListClientsAsync(Guid branchId, CancellationToken ct = default)
+    {
+        var clients = await repo.ListClientsAsync(branchId, ct);
+        var vehicles = (await repo.ListClientVehiclesAsync(branchId, null, ct)).ToLookup(v => v.ClientId);
+        var stats = (await repo.ClientStatsAsync(branchId, clock.NowLocal.Date, null, ct)).ToDictionary(s => s.ClientId);
+        var plans = (await repo.ClientPlanNamesAsync(branchId, null, ct)).ToLookup(p => p.ClientId, p => p.Name);
+        var money = await PlanMoneyAsync(branchId, null, ct);
+        return clients.Select(c =>
+        {
+            var m = money.GetValueOrDefault(c.Id);
+            return c.ToDto(vehicles[c.Id].ToList(), stats.GetValueOrDefault(c.Id), plans[c.Id].ToList(), m.Paid, m.Pending);
+        }).ToList();
+    }
+
+    public Task<ClientDto> GetClientByIdAsync(Guid branchId, Guid id, CancellationToken ct = default) => ClientDtoAsync(branchId, id, ct);
+
+    public async Task<IReadOnlyList<BookingDto>> ClientBookingsAsync(Guid branchId, Guid id, CancellationToken ct = default)
+    {
+        _ = await repo.GetClientByIdAsync(branchId, id, ct) ?? throw new AgendaNotFoundException("Cliente não encontrado.");
+        return (await repo.ListClientBookingsAsync(branchId, id, ClientHistoryLimit, ct)).Select(b => b.ToDto()).ToList();
+    }
+
+    private sealed record VehicleForm(Guid? Id, string Vehicle, string Plate, string VehicleType, string Color);
+
+    private sealed record ClientForm(string Name, string Phone, bool ReminderOptIn, bool Vip, string Notes, IReadOnlyList<VehicleForm> Vehicles);
+
+    private static ClientForm ValidateClientForm(ClientFormRequest req)
+    {
+        var name = LimitedText(req.Name, MaxNameLength, "Nome do cliente");
+        if (name.Length == 0) throw new AgendaValidationException("Informe o nome do cliente.");
+        var phone = string.IsNullOrWhiteSpace(req.Phone) ? string.Empty : AgendaFormat.NormalizePhone(req.Phone);
+        if (phone.Length is > 0 and < 12 || phone.Length > MaxPhoneLength)
+            throw new AgendaValidationException("WhatsApp inválido: informe DDD + número.");
+        var notes = LimitedText(req.Notes, MaxNotesLength, "Observações");
+
+        var vehicles = new List<VehicleForm>();
+        foreach (var v in req.Vehicles ?? [])
+        {
+            var model = LimitedText(v.Vehicle, MaxVehicleLength, "Carro");
+            var plate = AgendaFormat.NormalizePlate(v.Plate);
+            if (model.Length == 0 && plate.Length == 0) throw new AgendaValidationException("Informe o modelo ou a placa de cada carro.");
+            var type = v.VehicleType ?? string.Empty;
+            if (!VehicleTypes.Contains(type)) throw new AgendaValidationException("Tipo de veículo inválido.");
+            var color = LimitedText(v.Color, MaxColorLength, "Cor");
+            vehicles.Add(new VehicleForm(OptionalId(v.Id, "Carro"), model, plate, type, color));
+        }
+        if (vehicles.Count > MaxVehiclesPerClient)
+            throw new AgendaValidationException($"Um cliente pode ter no máximo {MaxVehiclesPerClient} carros.");
+        var repeated = vehicles.Where(v => v.Plate.Length > 0).GroupBy(v => v.Plate).FirstOrDefault(g => g.Count() > 1);
+        if (repeated is not null) throw new AgendaValidationException($"A placa {repeated.Key} aparece em mais de um carro.");
+
+        return new ClientForm(name, phone, req.ReminderOptIn && phone.Length > 0, req.Vip, notes, vehicles);
+    }
+
+    private static void ApplyForm(AgendaClient c, ClientForm form, DateTime nowLocal, DateTime utc)
+    {
+        if (c.ReminderOptIn != form.ReminderOptIn) c.OptInAt = form.ReminderOptIn ? nowLocal : null;
+        c.Name = form.Name;
+        c.Phone = form.Phone;
+        c.ReminderOptIn = form.ReminderOptIn;
+        c.Vip = form.Vip;
+        c.Notes = form.Notes;
+        c.UpdatedAt = utc;
+    }
+
+    private static async Task SaveVehiclesAsync(IAgendaDayTransaction tx, AgendaClient c, IReadOnlyList<VehicleForm> form, DateTime utc)
+    {
+        var existing = (await tx.ClientVehiclesAsync(c.Id)).ToDictionary(v => v.Id);
+        var keep = new List<Guid>();
+        foreach (var f in form)
+        {
+            AgendaClientVehicle v;
+            if (f.Id is { } id)
+            {
+                v = existing.GetValueOrDefault(id) ?? throw new AgendaValidationException("Carro não encontrado neste cliente.");
+            }
+            else
+            {
+                v = new AgendaClientVehicle { Id = Guid.NewGuid(), BranchId = c.BranchId, ClientId = c.Id, CreatedAt = utc.AddMilliseconds(10 * keep.Count), Active = true };
+            }
+            v.Vehicle = f.Vehicle;
+            v.Plate = f.Plate;
+            v.VehicleType = f.VehicleType;
+            v.Color = f.Color;
+            v.UpdatedAt = utc;
+            await tx.UpsertVehicleAsync(v);
+            keep.Add(v.Id);
+        }
+        await tx.DeactivateVehiclesAsync(c.Id, keep, utc);
+    }
+
+    public async Task<ClientDto> CreateClientAsync(Guid branchId, ClientFormRequest req, CancellationToken ct = default)
+    {
+        var form = ValidateClientForm(req);
+        var now = clock.NowLocal;
+        var id = await repo.InTransactionAsync(branchId, async tx =>
+        {
+            var owner = await PhoneOwnerAsync(tx, form.Phone, null);
+            if (owner is not null) throw new AgendaConflictException($"Esse WhatsApp já é do cliente {owner.Name}.");
+            var utc = DateTime.UtcNow;
+            var c = new AgendaClient { Id = Guid.NewGuid(), BranchId = branchId, CreatedAt = utc, Active = true };
+            ApplyForm(c, form, now, utc);
+            await tx.UpsertClientAsync(c);
+            await SaveVehiclesAsync(tx, c, form.Vehicles, utc);
+            return c.Id;
+        }, ct);
+        return await ClientDtoAsync(branchId, id, ct);
+    }
+
+    public async Task<ClientDto> UpdateClientAsync(Guid branchId, Guid id, ClientFormRequest req, CancellationToken ct = default)
+    {
+        var form = ValidateClientForm(req);
+        var now = clock.NowLocal;
+        await repo.InTransactionAsync(branchId, async tx =>
+        {
+            var c = await tx.GetClientByIdAsync(id) ?? throw new AgendaNotFoundException("Cliente não encontrado.");
+            var owner = await PhoneOwnerAsync(tx, form.Phone, c.Id);
+            if (owner is not null) throw new AgendaConflictException($"Esse WhatsApp já é do cliente {owner.Name}.");
+            var oldPhone = c.Phone;
+            var hadOptIn = c.ReminderOptIn;
+            var utc = DateTime.UtcNow;
+            ApplyForm(c, form, now, utc);
+            await tx.UpsertClientAsync(c);
+            await SaveVehiclesAsync(tx, c, form.Vehicles, utc);
+            if (hadOptIn && oldPhone.Length > 0 && (!c.ReminderOptIn || c.Phone != oldPhone))
+                await tx.CancelPendingRemindersOfPhonesAsync(AgendaFormat.PhoneVariants(oldPhone));
+            return true;
+        }, ct);
+        return await ClientDtoAsync(branchId, id, ct);
+    }
+
+    public async Task DeleteClientAsync(Guid branchId, Guid id, CancellationToken ct = default)
+    {
+        await repo.InTransactionAsync(branchId, async tx =>
+        {
+            var c = await tx.GetClientByIdAsync(id) ?? throw new AgendaNotFoundException("Cliente não encontrado.");
+            await tx.DeactivateClientAsync(c.Id, DateTime.UtcNow);
+            if (c.Phone.Length > 0) await tx.CancelPendingRemindersOfPhonesAsync(AgendaFormat.PhoneVariants(c.Phone));
+            return true;
+        }, ct);
+    }
 
     public async Task<ClientDto> UpsertClientAsync(Guid branchId, string phone, ClientRequest req, CancellationToken ct = default)
     {
@@ -516,7 +772,7 @@ public sealed class AgendaService(IAgendaRepository repo, IAgendaClock clock, IR
         if (normalized.Length is < 12 or > MaxPhoneLength) throw new AgendaValidationException("Telefone inválido.");
         var name = LimitedText(req.Name, MaxNameLength, "Nome do cliente");
         var now = clock.NowLocal;
-        return await repo.InTransactionAsync(branchId, async tx =>
+        var saved = await repo.InTransactionAsync(branchId, async tx =>
         {
             var variants = AgendaFormat.PhoneVariants(normalized);
             var utc = DateTime.UtcNow;
@@ -545,7 +801,320 @@ public sealed class AgendaService(IAgendaRepository repo, IAgendaClock clock, IR
             }
             await tx.UpsertClientAsync(c);
             if (!c.ReminderOptIn) await tx.CancelPendingRemindersOfPhonesAsync(variants);
-            return c.ToDto();
+            return c;
         }, ct);
+        return await ClientDtoAsync(branchId, saved, ct);
+    }
+
+    /* ---------- Planos de fidelidade ---------- */
+
+    private sealed record PlanForm(string Name, decimal DiscountPercent, IReadOnlyList<PlanItemModel> Items);
+
+    /// <summary>Nome, desconto de 0 a 100% e pelo menos um serviço ativo, sem repetir, de 1 a 31 vezes por mês.</summary>
+    private static PlanForm ValidatePlanForm(AgendaConfigModel cfg, string? rawName, decimal discount, List<PlanItemRequest>? rawItems)
+    {
+        var name = LimitedText(rawName, MaxNameLength, "Nome do plano");
+        if (name.Length == 0) throw new AgendaValidationException("Informe o nome do plano.");
+        if (discount is < 0 or > 100) throw new AgendaValidationException("O desconto precisa ficar entre 0% e 100%.");
+        var items = new List<PlanItemModel>();
+        foreach (var raw in rawItems ?? [])
+        {
+            var service = cfg.ServiceById(raw.ServiceId) ?? throw new AgendaValidationException("Serviço do plano não encontrado.");
+            if (!service.Active) throw new AgendaValidationException($"O serviço {service.Name} está desativado: tire do plano ou ative em Ajustes.");
+            if (items.Any(i => i.ServiceId == service.Id)) throw new AgendaValidationException($"O serviço {service.Name} aparece duas vezes no plano.");
+            if (raw.TimesPerMonth is < 1 or > LoyaltyRules.MaxTimesPerMonth)
+                throw new AgendaValidationException($"{service.Name}: informe de 1 a {LoyaltyRules.MaxTimesPerMonth} vezes por mês.");
+            items.Add(new PlanItemModel(service.Id, raw.TimesPerMonth));
+        }
+        if (items.Count == 0) throw new AgendaValidationException("Escolha pelo menos um serviço para o plano.");
+        if (items.Count > LoyaltyRules.MaxItems) throw new AgendaValidationException($"Um plano pode ter no máximo {LoyaltyRules.MaxItems} serviços.");
+        return new PlanForm(name, Math.Round(discount, 2, MidpointRounding.AwayFromZero), items);
+    }
+
+    private static string ServiceName(AgendaConfigModel cfg, string serviceId) => cfg.ServiceById(serviceId)?.Name ?? "Serviço removido";
+
+    private static LoyaltyPlanDto PlanDto(AgendaConfigModel cfg, AgendaLoyaltyPlan p, int activeClients)
+    {
+        var items = LoyaltyRules.ParseItems(p.ItemsJson);
+        var prices = new List<PlanPriceDto>();
+        foreach (var type in VehicleTypes)
+        {
+            var full = LoyaltyRules.FullPrice(cfg, items, type);
+            if (full is not null) prices.Add(new PlanPriceDto(type, full.Value, LoyaltyRules.ApplyDiscount(full.Value, p.DiscountPercent)));
+        }
+        return new LoyaltyPlanDto(
+            p.Id.ToString(),
+            p.Name,
+            p.Description,
+            p.DiscountPercent,
+            items.Select(i => new PlanItemDto(i.ServiceId, ServiceName(cfg, i.ServiceId), i.TimesPerMonth)).ToList(),
+            prices,
+            activeClients);
+    }
+
+    public async Task<IReadOnlyList<LoyaltyPlanDto>> ListPlansAsync(Guid branchId, CancellationToken ct = default)
+    {
+        var (_, cfg) = await LoadConfigAsync(branchId, ct);
+        var plans = await repo.ListLoyaltyPlansAsync(branchId, ct);
+        var clients = (await repo.PlanSubscribersAsync(branchId, ct)).ToDictionary(r => r.PlanId, r => r.Clients);
+        return plans.Select(p => PlanDto(cfg, p, clients.GetValueOrDefault(p.Id))).ToList();
+    }
+
+    private async Task<LoyaltyPlanDto> SavePlanAsync(Guid branchId, Guid? id, LoyaltyPlanRequest req, CancellationToken ct)
+    {
+        var (_, cfg) = await LoadConfigAsync(branchId, ct);
+        var form = ValidatePlanForm(cfg, req.Name, req.DiscountPercent, req.Items);
+        var description = LimitedText(req.Description, MaxNotesLength, "Descrição");
+        var utc = DateTime.UtcNow;
+        var plan = id is { } existingId
+            ? await repo.GetLoyaltyPlanAsync(branchId, existingId, ct) ?? throw new AgendaNotFoundException("Plano não encontrado.")
+            : new AgendaLoyaltyPlan { Id = Guid.NewGuid(), BranchId = branchId, CreatedAt = utc, Active = true };
+        plan.Name = form.Name;
+        plan.Description = description;
+        plan.DiscountPercent = form.DiscountPercent;
+        plan.ItemsJson = LoyaltyRules.ItemsJson(form.Items);
+        plan.UpdatedAt = utc;
+        await repo.SaveLoyaltyPlanAsync(plan, ct);
+        var clients = (await repo.PlanSubscribersAsync(branchId, ct)).FirstOrDefault(r => r.PlanId == plan.Id)?.Clients ?? 0;
+        return PlanDto(cfg, plan, clients);
+    }
+
+    public Task<LoyaltyPlanDto> CreatePlanAsync(Guid branchId, LoyaltyPlanRequest request, CancellationToken ct = default) =>
+        SavePlanAsync(branchId, null, request, ct);
+
+    /// <summary>Muda só o modelo: quem já aderiu continua com o plano como estava (nome, serviços e preço fechados na adesão).</summary>
+    public Task<LoyaltyPlanDto> UpdatePlanAsync(Guid branchId, Guid id, LoyaltyPlanRequest request, CancellationToken ct = default) =>
+        SavePlanAsync(branchId, id, request, ct);
+
+    /// <summary>Tira o plano da lista. Os clientes que aderiram continuam com ele até encerrar.</summary>
+    public async Task DeletePlanAsync(Guid branchId, Guid id, CancellationToken ct = default)
+    {
+        if (!await repo.DeactivateLoyaltyPlanAsync(branchId, id, ct)) throw new AgendaNotFoundException("Plano não encontrado.");
+    }
+
+    private static ClientPlanDto ClientPlanDto(
+        AgendaConfigModel cfg, AgendaClientPlan p, DateTime month, IEnumerable<PlanUsageRow> usage,
+        IEnumerable<AgendaPlanPayment> payments, IEnumerable<PlanUpcomingRow> upcoming, DateTime today)
+    {
+        var used = usage.Where(u => u.ClientPlanId == p.Id).ToDictionary(u => u.ServiceId, u => u.Used);
+        return new ClientPlanDto(
+            p.Id.ToString(),
+            p.ClientId.ToString(),
+            p.PlanId?.ToString(),
+            p.Name,
+            p.DiscountPercent,
+            p.VehicleId?.ToString(),
+            p.VehicleType,
+            p.FullPrice,
+            p.Price,
+            AgendaFormat.Date(p.StartDate),
+            p.EndDate is null ? null : AgendaFormat.Date(p.EndDate.Value),
+            LoyaltyRules.MonthKey(month),
+            LoyaltyRules.ParseItems(p.ItemsJson)
+                .Select(i => new PlanUsageDto(i.ServiceId, ServiceName(cfg, i.ServiceId), i.TimesPerMonth, used.GetValueOrDefault(i.ServiceId)))
+                .ToList(),
+            LoyaltyRules.Charges(p, payments, today),
+            upcoming.FirstOrDefault(u => u.ClientPlanId == p.Id)?.Bookings ?? 0);
+    }
+
+    public async Task<IReadOnlyList<ClientPlanDto>> ListClientPlansAsync(Guid branchId, Guid clientId, string? date, CancellationToken ct = default)
+    {
+        var (_, cfg) = await LoadConfigAsync(branchId, ct);
+        _ = await repo.GetClientByIdAsync(branchId, clientId, ct) ?? throw new AgendaNotFoundException("Cliente não encontrado.");
+        var day = string.IsNullOrWhiteSpace(date) ? clock.NowLocal.Date : AgendaFormat.ParseDate(date);
+        var (from, to) = LoyaltyRules.Month(day);
+        var plans = await repo.ListClientPlansAsync(branchId, clientId, ct);
+        var ids = plans.Select(p => p.Id).ToList();
+        var usage = await repo.PlanUsageAsync(branchId, ids, from, to, ct);
+        var payments = await repo.ListPlanPaymentsAsync(branchId, clientId, ct);
+        var today = clock.NowLocal.Date;
+        var upcoming = await repo.PlanUpcomingAsync(branchId, ids, today, ct);
+        return plans.Select(p => ClientPlanDto(cfg, p, from, usage, payments, upcoming, today)).ToList();
+    }
+
+    private async Task<ClientPlanDto> ClientPlanDtoAsync(Guid branchId, AgendaConfigModel cfg, AgendaClientPlan plan, CancellationToken ct)
+    {
+        var today = clock.NowLocal.Date;
+        var (from, to) = LoyaltyRules.Month(today);
+        var usage = await repo.PlanUsageAsync(branchId, [plan.Id], from, to, ct);
+        var payments = await repo.ListPlanPaymentsAsync(branchId, plan.ClientId, ct);
+        var upcoming = await repo.PlanUpcomingAsync(branchId, [plan.Id], today, ct);
+        return ClientPlanDto(cfg, plan, from, usage, payments, upcoming, today);
+    }
+
+    /// <summary>
+    /// Grava a adesão: valida o plano, acha o carro, fecha o preço para o tipo de veículo e recusa
+    /// um segundo plano em andamento para o mesmo carro (ou, sem carro, para o mesmo tipo de veículo).
+    /// </summary>
+    private async Task<ClientPlanDto> SaveClientPlanAsync(Guid branchId, Guid clientId, Guid? id, ClientPlanRequest req, CancellationToken ct)
+    {
+        var (_, cfg) = await LoadConfigAsync(branchId, ct);
+        var form = ValidatePlanForm(cfg, req.Name, req.DiscountPercent, req.Items);
+        var planId = OptionalId(req.PlanId, "Plano");
+        var vehicleId = OptionalId(req.VehicleId, "Carro");
+        if (planId is { } pid && await repo.GetLoyaltyPlanAsync(branchId, pid, ct) is null && id is null)
+            throw new AgendaValidationException("Plano não encontrado. Ele pode ter sido excluído; escolha outro.");
+        var today = clock.NowLocal.Date;
+
+        var saved = await repo.InTransactionAsync(branchId, async tx =>
+        {
+            var client = await tx.GetClientByIdAsync(clientId) ?? throw new AgendaNotFoundException("Cliente não encontrado.");
+            string vehicleType;
+            string carLabel;
+            if (vehicleId is { } vid)
+            {
+                var car = (await tx.ClientVehiclesAsync(client.Id)).FirstOrDefault(v => v.Id == vid)
+                          ?? throw new AgendaValidationException("Esse carro não é deste cliente.");
+                vehicleType = car.VehicleType;
+                carLabel = string.Join(" · ", new[] { car.Vehicle, car.Plate }.Where(x => x.Length > 0));
+            }
+            else
+            {
+                vehicleType = req.VehicleType ?? string.Empty;
+                if (!VehicleTypes.Contains(vehicleType)) throw new AgendaValidationException("Escolha o carro ou o tipo de veículo do plano.");
+                carLabel = vehicleType;
+            }
+
+            var full = LoyaltyRules.FullPrice(cfg, form.Items, vehicleType);
+            if (full is null)
+            {
+                var missing = form.Items.Select(i => cfg.ServiceById(i.ServiceId)!).First(s => s.PriceFor(vehicleType) is null);
+                throw new AgendaValidationException($"O serviço {missing.Name} não tem preço para {vehicleType}: defina o preço em Ajustes ou tire do plano.");
+            }
+
+            var plans = await tx.ClientPlansAsync(client.Id);
+            var plan = id is { } existingId
+                ? plans.FirstOrDefault(p => p.Id == existingId) ?? throw new AgendaNotFoundException("Plano do cliente não encontrado.")
+                : null;
+            if (plan?.EndDate is not null) throw new AgendaValidationException("Este plano já foi encerrado.");
+
+            var clash = plans.FirstOrDefault(p => p.EndDate is null && p.Id != plan?.Id &&
+                (vehicleId is not null ? p.VehicleId == vehicleId : p.VehicleId is null && p.VehicleType == vehicleType));
+            if (clash is not null)
+                throw new AgendaConflictException($"{carLabel} já tem o plano {clash.Name}. Edite ou encerre esse plano antes.");
+
+            var utc = DateTime.UtcNow;
+            plan ??= new AgendaClientPlan
+            {
+                Id = Guid.NewGuid(),
+                BranchId = branchId,
+                ClientId = client.Id,
+                StartDate = today,
+                CreatedAt = utc,
+                Active = true,
+            };
+            plan.PlanId = planId ?? plan.PlanId;
+            plan.Name = form.Name;
+            plan.DiscountPercent = form.DiscountPercent;
+            plan.ItemsJson = LoyaltyRules.ItemsJson(form.Items);
+            plan.VehicleId = vehicleId;
+            plan.VehicleType = vehicleType;
+            plan.FullPrice = full.Value;
+            plan.Price = LoyaltyRules.ApplyDiscount(full.Value, form.DiscountPercent);
+            plan.UpdatedAt = utc;
+            await tx.UpsertClientPlanAsync(plan);
+            return plan;
+        }, ct);
+        return await ClientPlanDtoAsync(branchId, cfg, saved, ct);
+    }
+
+    public Task<ClientPlanDto> CreateClientPlanAsync(Guid branchId, Guid clientId, ClientPlanRequest request, CancellationToken ct = default) =>
+        SaveClientPlanAsync(branchId, clientId, null, request, ct);
+
+    public Task<ClientPlanDto> UpdateClientPlanAsync(Guid branchId, Guid clientId, Guid id, ClientPlanRequest request, CancellationToken ct = default) =>
+        SaveClientPlanAsync(branchId, clientId, id, request, ct);
+
+    public async Task<ClientPlanDto> EndClientPlanAsync(Guid branchId, Guid clientId, Guid id, CancellationToken ct = default)
+    {
+        var (_, cfg) = await LoadConfigAsync(branchId, ct);
+        var today = clock.NowLocal.Date;
+        var plan = await repo.InTransactionAsync(branchId, async tx =>
+        {
+            var p = (await tx.ClientPlansAsync(clientId)).FirstOrDefault(x => x.Id == id)
+                    ?? throw new AgendaNotFoundException("Plano do cliente não encontrado.");
+            if (p.EndDate is not null) throw new AgendaValidationException("Este plano já foi encerrado.");
+            // Encerrar no mesmo dia da adesão: o plano vale só hoje.
+            p.EndDate = today < p.StartDate ? p.StartDate : today;
+            p.UpdatedAt = DateTime.UtcNow;
+            await tx.UpsertClientPlanAsync(p);
+            // O que já estava marcado para depois do encerramento sai do plano e volta ao preço normal do serviço.
+            foreach (var b in await tx.PlanBookingsAfterAsync(p.Id, p.EndDate.Value))
+                await tx.ReleaseBookingFromPlanAsync(b.Id, cfg.ServiceById(b.ServiceId)?.PriceFor(b.VehicleType) ?? b.Price, p.UpdatedAt);
+            return p;
+        }, ct);
+        return await ClientPlanDtoAsync(branchId, cfg, plan, ct);
+    }
+
+    public async Task<ClientPlanDto> PayChargeAsync(Guid branchId, Guid clientId, Guid id, string month, CancellationToken ct = default)
+    {
+        var (_, cfg) = await LoadConfigAsync(branchId, ct);
+        var m = LoyaltyRules.ParseMonth(month);
+        var now = clock.NowLocal;
+        var plan = await repo.InTransactionAsync(branchId, async tx =>
+        {
+            var p = (await tx.ClientPlansAsync(clientId)).FirstOrDefault(x => x.Id == id)
+                    ?? throw new AgendaNotFoundException("Plano do cliente não encontrado.");
+            if (!LoyaltyRules.ChargeMonths(p, now.Date).Contains(m))
+                throw new AgendaValidationException($"O plano {p.Name} não tem mensalidade em {LoyaltyRules.MonthKey(m)}.");
+            if ((await tx.PlanPaymentsAsync(p.Id)).Any(x => x.Month.Date == m))
+                throw new AgendaConflictException($"A mensalidade de {LoyaltyRules.MonthKey(m)} já está paga.");
+            var utc = DateTime.UtcNow;
+            await tx.InsertPlanPaymentAsync(new AgendaPlanPayment
+            {
+                Id = Guid.NewGuid(),
+                BranchId = branchId,
+                ClientId = p.ClientId,
+                ClientPlanId = p.Id,
+                Month = m,
+                Amount = p.Price,
+                PaidAt = now,
+                CreatedAt = utc,
+                UpdatedAt = utc,
+                Active = true,
+            });
+            return p;
+        }, ct);
+        return await ClientPlanDtoAsync(branchId, cfg, plan, ct);
+    }
+
+    public async Task<ClientPlanDto> UndoChargeAsync(Guid branchId, Guid clientId, Guid id, string month, CancellationToken ct = default)
+    {
+        var (_, cfg) = await LoadConfigAsync(branchId, ct);
+        var m = LoyaltyRules.ParseMonth(month);
+        var plan = await repo.InTransactionAsync(branchId, async tx =>
+        {
+            var p = (await tx.ClientPlansAsync(clientId)).FirstOrDefault(x => x.Id == id)
+                    ?? throw new AgendaNotFoundException("Plano do cliente não encontrado.");
+            var paid = (await tx.PlanPaymentsAsync(p.Id)).FirstOrDefault(x => x.Month.Date == m)
+                       ?? throw new AgendaNotFoundException($"A mensalidade de {LoyaltyRules.MonthKey(m)} não está paga.");
+            await tx.DeactivatePlanPaymentAsync(paid.Id, DateTime.UtcNow);
+            return p;
+        }, ct);
+        return await ClientPlanDtoAsync(branchId, cfg, plan, ct);
+    }
+
+    /// <summary>
+    /// Cobre o agendamento pelo plano do cliente quando o plano vale no dia, inclui o serviço e ainda tem vez no mês
+    /// (preço zero: o cliente paga a mensalidade). Com <paramref name="onlyPlanId"/>, só esse plano serve (remarcação).
+    /// Sem plano que cubra, o agendamento fica como está (preço normal).
+    /// </summary>
+    private static async Task ApplyPlanAsync(IAgendaDayTransaction tx, AgendaBooking booking, Guid? onlyPlanId)
+    {
+        if (booking.ClientId is not { } clientId) return;
+        var plans = await tx.ClientPlansAsync(clientId);
+        var plan = onlyPlanId is { } pid
+            ? plans.FirstOrDefault(p => p.Id == pid && LoyaltyRules.Covers(p, booking.Date))
+            : LoyaltyRules.PlanFor(plans, booking.VehicleId, booking.VehicleType, booking.Date);
+        if (plan is null) return;
+        var item = LoyaltyRules.ParseItems(plan.ItemsJson).FirstOrDefault(i => i.ServiceId == booking.ServiceId);
+        if (item is null) return;
+
+        await tx.LockPlanMonthAsync(plan.Id, booking.Date);
+        var (from, to) = LoyaltyRules.Month(booking.Date);
+        var used = await tx.PlanServiceUsageAsync(plan.Id, booking.ServiceId, from, to);
+        if (used >= item.TimesPerMonth) return;
+
+        booking.ClientPlanId = plan.Id;
+        booking.Price = 0m;
     }
 }

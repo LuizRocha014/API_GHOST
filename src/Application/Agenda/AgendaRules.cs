@@ -212,13 +212,41 @@ public static class AgendaMapping
         b.Origin,
         DateTime.SpecifyKind(b.CreatedAt, DateTimeKind.Utc).ToString("O", CultureInfo.InvariantCulture),
         DateTime.SpecifyKind(b.UpdatedAt, DateTimeKind.Utc).ToString("O", CultureInfo.InvariantCulture),
-        b.RescheduledFrom?.ToString());
+        b.RescheduledFrom?.ToString(),
+        b.ClientId?.ToString(),
+        b.VehicleId?.ToString(),
+        b.ClientPlanId?.ToString());
 
     public static BlockDto ToDto(this AgendaBlock k) =>
         new(k.Id.ToString(), k.BoxId, AgendaFormat.Date(k.Date), k.StartMin, k.EndMin, k.Reason);
 
-    public static ClientDto ToDto(this AgendaClient c) =>
-        new(c.Phone, c.Name, c.ReminderOptIn, c.OptInAt is null ? null : AgendaFormat.LocalDateTime(c.OptInAt.Value));
+    /// <summary><paramref name="planPaid"/>: mensalidades pagas (entram no total gasto); <paramref name="pendingCharges"/>: meses em aberto.</summary>
+    public static ClientDto ToDto(
+        this AgendaClient c, IReadOnlyList<AgendaClientVehicle> vehicles, ClientStatsRow? stats, IReadOnlyList<string> planNames,
+        decimal planPaid, int pendingCharges) => new(
+        c.Id.ToString(),
+        c.Phone,
+        c.Name,
+        c.ReminderOptIn,
+        c.OptInAt is null ? null : AgendaFormat.LocalDateTime(c.OptInAt.Value),
+        c.Vip,
+        c.Notes,
+        vehicles.Select(v => v.ToDto()).ToList(),
+        stats is null
+            ? ClientStatsDto.Empty with { TotalSpent = planPaid }
+            : new ClientStatsDto(
+                stats.Done,
+                stats.NoShow,
+                stats.Canceled,
+                stats.Upcoming,
+                stats.TotalSpent + planPaid,
+                stats.LastVisit is null ? null : AgendaFormat.Date(stats.LastVisit.Value),
+                stats.NextDate is null ? null : AgendaFormat.LocalDateTime(stats.NextDate.Value.AddMinutes(stats.NextStart ?? 0))),
+        planNames,
+        pendingCharges);
+
+    public static ClientVehicleDto ToDto(this AgendaClientVehicle v) =>
+        new(v.Id.ToString(), v.Vehicle, v.Plate, v.VehicleType, v.Color);
 
     public static ReminderDto ToDto(this AgendaReminder r) => new(
         r.Id.ToString(),

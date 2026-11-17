@@ -14,14 +14,28 @@ public sealed class AgendaRepository(SqlSession session) : IAgendaRepository
 
     internal const string BookingColumns = """
         Id, BranchId, [Date], StartMin, EndMin, BoxId, ServiceId, ServiceName, Price, VehicleType, Vehicle, Plate,
-        ClientName, Phone, Notes, Status, Origin, RescheduledFrom, CreatedAt, UpdatedAt, Active
+        ClientName, Phone, Notes, Status, Origin, RescheduledFrom, ClientId, VehicleId, ClientPlanId, CreatedAt, UpdatedAt, Active
         """;
 
     internal const string ReminderColumns = """
         Id, BranchId, BookingId, Type, ScheduledFor, Status, Attempts, WamId, Answer, AnsweredAt, Error, CreatedAt, UpdatedAt, Active
         """;
 
-    internal const string ClientColumns = "Id, BranchId, Phone, Name, ReminderOptIn, OptInAt, CreatedAt, UpdatedAt, Active";
+    internal const string ClientColumns = "Id, BranchId, Phone, Name, ReminderOptIn, OptInAt, Vip, Notes, CreatedAt, UpdatedAt, Active";
+
+    internal const string VehicleColumns = "Id, BranchId, ClientId, Vehicle, Plate, VehicleType, Color, CreatedAt, UpdatedAt, Active";
+
+    internal const string LoyaltyPlanColumns = "Id, BranchId, Name, Description, DiscountPercent, ItemsJson, CreatedAt, UpdatedAt, Active";
+
+    internal const string ClientPlanColumns = """
+        Id, BranchId, ClientId, PlanId, Name, DiscountPercent, ItemsJson, VehicleId, VehicleType, FullPrice, Price, StartDate, EndDate,
+        CreatedAt, UpdatedAt, Active
+        """;
+
+    /// <summary>Status que contam como uso do plano: a falta gasta a vez; só o cancelamento devolve.</summary>
+    internal const string UsedStatuses = "('scheduled', 'in_progress', 'done', 'no_show')";
+
+    internal const string PlanPaymentColumns = "Id, BranchId, ClientId, ClientPlanId, [Month], Amount, PaidAt, CreatedAt, UpdatedAt, Active";
 
     /* ---------- Acesso ---------- */
 
@@ -152,6 +166,156 @@ public sealed class AgendaRepository(SqlSession session) : IAgendaRepository
         (await Conn.QueryAsync<AgendaClient>(new CommandDefinition(
             $"SELECT {ClientColumns} FROM AgendaClients WHERE BranchId = @BranchId AND Active = 1 ORDER BY Name",
             new { BranchId = branchId }, cancellationToken: ct))).AsList();
+
+    public Task<AgendaClient?> GetClientByIdAsync(Guid branchId, Guid id, CancellationToken ct = default) =>
+        Conn.QuerySingleOrDefaultAsync<AgendaClient?>(new CommandDefinition(
+            $"SELECT {ClientColumns} FROM AgendaClients WHERE Id = @Id AND BranchId = @BranchId AND Active = 1",
+            new { Id = id, BranchId = branchId }, cancellationToken: ct));
+
+    public async Task<IReadOnlyList<AgendaClientVehicle>> ListClientVehiclesAsync(Guid branchId, Guid? clientId, CancellationToken ct = default) =>
+        (await Conn.QueryAsync<AgendaClientVehicle>(new CommandDefinition(
+            $"""
+            SELECT {VehicleColumns} FROM AgendaClientVehicles
+             WHERE BranchId = @BranchId AND Active = 1 AND (@ClientId IS NULL OR ClientId = @ClientId)
+             ORDER BY CreatedAt
+            """,
+            new { BranchId = branchId, ClientId = clientId }, cancellationToken: ct))).AsList();
+
+    public async Task<IReadOnlyList<ClientStatsRow>> ClientStatsAsync(Guid branchId, DateTime today, Guid? clientId, CancellationToken ct = default)
+    {
+        const string sql = """
+            WITH b AS (
+                SELECT ClientId, [Date], StartMin, Status, Price
+                  FROM AgendaBookings
+                 WHERE BranchId = @BranchId AND Active = 1 AND ClientId IS NOT NULL AND (@ClientId IS NULL OR ClientId = @ClientId)
+            ),
+            nxt AS (
+                SELECT ClientId, [Date], StartMin,
+                       ROW_NUMBER() OVER (PARTITION BY ClientId ORDER BY [Date], StartMin) AS rn
+                  FROM b
+                 WHERE Status = 'scheduled' AND [Date] >= @Today
+            )
+            SELECT b.ClientId,
+                   SUM(CASE WHEN b.Status = 'done' THEN 1 ELSE 0 END) AS Done,
+                   SUM(CASE WHEN b.Status = 'no_show' THEN 1 ELSE 0 END) AS NoShow,
+                   SUM(CASE WHEN b.Status = 'canceled' THEN 1 ELSE 0 END) AS Canceled,
+                   SUM(CASE WHEN b.Status = 'scheduled' AND b.[Date] >= @Today THEN 1 ELSE 0 END) AS Upcoming,
+                   COALESCE(SUM(CASE WHEN b.Status = 'done' THEN b.Price END), 0) AS TotalSpent,
+                   MAX(CASE WHEN b.Status = 'done' THEN b.[Date] END) AS LastVisit,
+                   MAX(n.[Date]) AS NextDate,
+                   MAX(n.StartMin) AS NextStart
+              FROM b
+              LEFT JOIN nxt n ON n.ClientId = b.ClientId AND n.rn = 1
+             GROUP BY b.ClientId
+            """;
+        return (await Conn.QueryAsync<ClientStatsRow>(new CommandDefinition(
+            sql, new { BranchId = branchId, Today = today.Date, ClientId = clientId }, cancellationToken: ct))).AsList();
+    }
+
+    public async Task<IReadOnlyList<AgendaBooking>> ListClientBookingsAsync(Guid branchId, Guid clientId, int limit, CancellationToken ct = default) =>
+        (await Conn.QueryAsync<AgendaBooking>(new CommandDefinition(
+            $"""
+            SELECT TOP (@Limit) {BookingColumns} FROM AgendaBookings
+             WHERE BranchId = @BranchId AND ClientId = @ClientId AND Active = 1
+             ORDER BY [Date] DESC, StartMin DESC
+            """,
+            new { BranchId = branchId, ClientId = clientId, Limit = limit }, cancellationToken: ct))).AsList();
+
+    /* ---------- Planos de fidelidade ---------- */
+
+    public async Task<IReadOnlyList<AgendaLoyaltyPlan>> ListLoyaltyPlansAsync(Guid branchId, CancellationToken ct = default) =>
+        (await Conn.QueryAsync<AgendaLoyaltyPlan>(new CommandDefinition(
+            $"SELECT {LoyaltyPlanColumns} FROM AgendaLoyaltyPlans WHERE BranchId = @BranchId AND Active = 1 ORDER BY Name",
+            new { BranchId = branchId }, cancellationToken: ct))).AsList();
+
+    public Task<AgendaLoyaltyPlan?> GetLoyaltyPlanAsync(Guid branchId, Guid id, CancellationToken ct = default) =>
+        Conn.QuerySingleOrDefaultAsync<AgendaLoyaltyPlan?>(new CommandDefinition(
+            $"SELECT {LoyaltyPlanColumns} FROM AgendaLoyaltyPlans WHERE Id = @Id AND BranchId = @BranchId AND Active = 1",
+            new { Id = id, BranchId = branchId }, cancellationToken: ct));
+
+    public async Task SaveLoyaltyPlanAsync(AgendaLoyaltyPlan plan, CancellationToken ct = default)
+    {
+        const string sql = """
+            UPDATE AgendaLoyaltyPlans SET Name = @Name, Description = @Description, DiscountPercent = @DiscountPercent,
+                   ItemsJson = @ItemsJson, UpdatedAt = @UpdatedAt
+             WHERE Id = @Id AND BranchId = @BranchId AND Active = 1;
+            IF @@ROWCOUNT = 0
+                INSERT INTO AgendaLoyaltyPlans (Id, BranchId, Name, Description, DiscountPercent, ItemsJson, CreatedAt, UpdatedAt, Active)
+                VALUES (@Id, @BranchId, @Name, @Description, @DiscountPercent, @ItemsJson, @CreatedAt, @UpdatedAt, 1);
+            """;
+        await Conn.ExecuteAsync(new CommandDefinition(sql, plan, cancellationToken: ct));
+    }
+
+    public async Task<bool> DeactivateLoyaltyPlanAsync(Guid branchId, Guid id, CancellationToken ct = default) =>
+        await Conn.ExecuteAsync(new CommandDefinition(
+            "UPDATE AgendaLoyaltyPlans SET Active = 0, UpdatedAt = @Utc WHERE Id = @Id AND BranchId = @BranchId AND Active = 1",
+            new { Id = id, BranchId = branchId, Utc = DateTime.UtcNow }, cancellationToken: ct)) > 0;
+
+    public async Task<IReadOnlyList<PlanSubscribersRow>> PlanSubscribersAsync(Guid branchId, CancellationToken ct = default) =>
+        (await Conn.QueryAsync<PlanSubscribersRow>(new CommandDefinition(
+            """
+            SELECT PlanId, COUNT(DISTINCT ClientId) AS Clients
+              FROM AgendaClientPlans
+             WHERE BranchId = @BranchId AND Active = 1 AND EndDate IS NULL AND PlanId IS NOT NULL
+             GROUP BY PlanId
+            """,
+            new { BranchId = branchId }, cancellationToken: ct))).AsList();
+
+    public async Task<IReadOnlyList<AgendaClientPlan>> ListClientPlansAsync(Guid branchId, Guid clientId, CancellationToken ct = default) =>
+        (await Conn.QueryAsync<AgendaClientPlan>(new CommandDefinition(
+            $"""
+            SELECT {ClientPlanColumns} FROM AgendaClientPlans
+             WHERE BranchId = @BranchId AND ClientId = @ClientId AND Active = 1
+             ORDER BY CASE WHEN EndDate IS NULL THEN 0 ELSE 1 END, StartDate DESC, CreatedAt DESC
+            """,
+            new { BranchId = branchId, ClientId = clientId }, cancellationToken: ct))).AsList();
+
+    public async Task<IReadOnlyList<ClientPlanNameRow>> ClientPlanNamesAsync(Guid branchId, Guid? clientId, CancellationToken ct = default) =>
+        (await Conn.QueryAsync<ClientPlanNameRow>(new CommandDefinition(
+            """
+            SELECT ClientId, Name FROM AgendaClientPlans
+             WHERE BranchId = @BranchId AND Active = 1 AND EndDate IS NULL AND (@ClientId IS NULL OR ClientId = @ClientId)
+             ORDER BY StartDate, CreatedAt
+            """,
+            new { BranchId = branchId, ClientId = clientId }, cancellationToken: ct))).AsList();
+
+    public async Task<IReadOnlyList<PlanUsageRow>> PlanUsageAsync(
+        Guid branchId, IReadOnlyList<Guid> clientPlanIds, DateTime from, DateTime to, CancellationToken ct = default)
+    {
+        if (clientPlanIds.Count == 0) return [];
+        var sql = $"""
+            SELECT ClientPlanId, ServiceId, COUNT(1) AS Used
+              FROM AgendaBookings
+             WHERE BranchId = @BranchId AND Active = 1 AND ClientPlanId IN @Ids AND [Date] BETWEEN @From AND @To
+               AND Status IN {UsedStatuses}
+             GROUP BY ClientPlanId, ServiceId
+            """;
+        return (await Conn.QueryAsync<PlanUsageRow>(new CommandDefinition(
+            sql, new { BranchId = branchId, Ids = clientPlanIds, From = from.Date, To = to.Date }, cancellationToken: ct))).AsList();
+    }
+
+    public async Task<IReadOnlyList<AgendaClientPlan>> ListBranchClientPlansAsync(Guid branchId, Guid? clientId, CancellationToken ct = default) =>
+        (await Conn.QueryAsync<AgendaClientPlan>(new CommandDefinition(
+            $"SELECT {ClientPlanColumns} FROM AgendaClientPlans WHERE BranchId = @BranchId AND Active = 1 AND (@ClientId IS NULL OR ClientId = @ClientId)",
+            new { BranchId = branchId, ClientId = clientId }, cancellationToken: ct))).AsList();
+
+    public async Task<IReadOnlyList<AgendaPlanPayment>> ListPlanPaymentsAsync(Guid branchId, Guid? clientId, CancellationToken ct = default) =>
+        (await Conn.QueryAsync<AgendaPlanPayment>(new CommandDefinition(
+            $"SELECT {PlanPaymentColumns} FROM AgendaPlanPayments WHERE BranchId = @BranchId AND Active = 1 AND (@ClientId IS NULL OR ClientId = @ClientId)",
+            new { BranchId = branchId, ClientId = clientId }, cancellationToken: ct))).AsList();
+
+    public async Task<IReadOnlyList<PlanUpcomingRow>> PlanUpcomingAsync(Guid branchId, IReadOnlyList<Guid> clientPlanIds, DateTime today, CancellationToken ct = default)
+    {
+        if (clientPlanIds.Count == 0) return [];
+        const string sql = """
+            SELECT ClientPlanId, COUNT(1) AS Bookings
+              FROM AgendaBookings
+             WHERE BranchId = @BranchId AND Active = 1 AND ClientPlanId IN @Ids AND [Date] > @Today AND Status = 'scheduled'
+             GROUP BY ClientPlanId
+            """;
+        return (await Conn.QueryAsync<PlanUpcomingRow>(new CommandDefinition(
+            sql, new { BranchId = branchId, Ids = clientPlanIds, Today = today.Date }, cancellationToken: ct))).AsList();
+    }
 
     /* ---------- Escrita simples ---------- */
 
@@ -288,9 +452,11 @@ internal sealed class AgendaTransaction(SqlConnection conn, DbTransaction tx, Gu
     {
         const string sql = """
             INSERT INTO AgendaBookings (Id, BranchId, [Date], StartMin, EndMin, BoxId, ServiceId, ServiceName, Price, VehicleType, Vehicle, Plate,
-                                        ClientName, Phone, Notes, Status, Origin, RescheduledFrom, CreatedAt, UpdatedAt, Active)
+                                        ClientName, Phone, Notes, Status, Origin, RescheduledFrom, ClientId, VehicleId, ClientPlanId,
+                                        CreatedAt, UpdatedAt, Active)
             VALUES (@Id, @BranchId, @Date, @StartMin, @EndMin, @BoxId, @ServiceId, @ServiceName, @Price, @VehicleType, @Vehicle, @Plate,
-                    @ClientName, @Phone, @Notes, @Status, @Origin, @RescheduledFrom, @CreatedAt, @UpdatedAt, @Active)
+                    @ClientName, @Phone, @Notes, @Status, @Origin, @RescheduledFrom, @ClientId, @VehicleId, @ClientPlanId,
+                    @CreatedAt, @UpdatedAt, @Active)
             """;
         await conn.ExecuteAsync(Cmd(sql, b));
         if (_lockedDate == b.Date.Date) _lockedBookings?.Add(b);
@@ -306,17 +472,129 @@ internal sealed class AgendaTransaction(SqlConnection conn, DbTransaction tx, Gu
             $"SELECT TOP (1) {AgendaRepository.ClientColumns} FROM AgendaClients WITH (UPDLOCK, HOLDLOCK) WHERE BranchId = @BranchId AND Active = 1 AND Phone IN @Phones ORDER BY UpdatedAt DESC",
             new { BranchId = branchId, Phones = phoneVariants }));
 
+    public Task<AgendaClient?> GetClientByIdAsync(Guid id) =>
+        conn.QuerySingleOrDefaultAsync<AgendaClient?>(Cmd(
+            $"SELECT {AgendaRepository.ClientColumns} FROM AgendaClients WITH (UPDLOCK) WHERE Id = @Id AND BranchId = @BranchId AND Active = 1",
+            new { Id = id, BranchId = branchId }));
+
     public Task UpsertClientAsync(AgendaClient c)
     {
         const string sql = """
-            UPDATE AgendaClients SET Name = @Name, ReminderOptIn = @ReminderOptIn, OptInAt = @OptInAt, UpdatedAt = @UpdatedAt, Active = 1
+            UPDATE AgendaClients SET Phone = @Phone, Name = @Name, ReminderOptIn = @ReminderOptIn, OptInAt = @OptInAt,
+                   Vip = @Vip, Notes = @Notes, UpdatedAt = @UpdatedAt, Active = 1
              WHERE Id = @Id;
             IF @@ROWCOUNT = 0
-                INSERT INTO AgendaClients (Id, BranchId, Phone, Name, ReminderOptIn, OptInAt, CreatedAt, UpdatedAt, Active)
-                VALUES (@Id, @BranchId, @Phone, @Name, @ReminderOptIn, @OptInAt, @CreatedAt, @UpdatedAt, 1);
+                INSERT INTO AgendaClients (Id, BranchId, Phone, Name, ReminderOptIn, OptInAt, Vip, Notes, CreatedAt, UpdatedAt, Active)
+                VALUES (@Id, @BranchId, @Phone, @Name, @ReminderOptIn, @OptInAt, @Vip, @Notes, @CreatedAt, @UpdatedAt, 1);
             """;
         return conn.ExecuteAsync(Cmd(sql, c));
     }
+
+    public Task DeactivateClientAsync(Guid id, DateTime updatedAtUtc) =>
+        conn.ExecuteAsync(Cmd(
+            """
+            UPDATE AgendaClientVehicles SET Active = 0, UpdatedAt = @Utc WHERE ClientId = @Id AND BranchId = @BranchId AND Active = 1;
+            UPDATE AgendaClientPlans SET Active = 0, UpdatedAt = @Utc WHERE ClientId = @Id AND BranchId = @BranchId AND Active = 1;
+            UPDATE AgendaClients SET Active = 0, UpdatedAt = @Utc WHERE Id = @Id AND BranchId = @BranchId;
+            """,
+            new { Id = id, BranchId = branchId, Utc = updatedAtUtc }));
+
+    public async Task<IReadOnlyList<AgendaClientVehicle>> ClientVehiclesAsync(Guid clientId) =>
+        (await conn.QueryAsync<AgendaClientVehicle>(Cmd(
+            $"SELECT {AgendaRepository.VehicleColumns} FROM AgendaClientVehicles WHERE ClientId = @ClientId AND BranchId = @BranchId AND Active = 1 ORDER BY CreatedAt",
+            new { ClientId = clientId, BranchId = branchId }))).AsList();
+
+    public Task UpsertVehicleAsync(AgendaClientVehicle v)
+    {
+        const string sql = """
+            UPDATE AgendaClientVehicles SET Vehicle = @Vehicle, Plate = @Plate, VehicleType = @VehicleType, Color = @Color,
+                   UpdatedAt = @UpdatedAt, Active = 1
+             WHERE Id = @Id AND ClientId = @ClientId;
+            IF @@ROWCOUNT = 0
+                INSERT INTO AgendaClientVehicles (Id, BranchId, ClientId, Vehicle, Plate, VehicleType, Color, CreatedAt, UpdatedAt, Active)
+                VALUES (@Id, @BranchId, @ClientId, @Vehicle, @Plate, @VehicleType, @Color, @CreatedAt, @UpdatedAt, 1);
+            """;
+        return conn.ExecuteAsync(Cmd(sql, v));
+    }
+
+    public Task DeactivateVehiclesAsync(Guid clientId, IReadOnlyList<Guid> keepIds, DateTime updatedAtUtc) =>
+        conn.ExecuteAsync(Cmd(
+            keepIds.Count == 0
+                ? "UPDATE AgendaClientVehicles SET Active = 0, UpdatedAt = @Utc WHERE ClientId = @ClientId AND BranchId = @BranchId AND Active = 1"
+                : "UPDATE AgendaClientVehicles SET Active = 0, UpdatedAt = @Utc WHERE ClientId = @ClientId AND BranchId = @BranchId AND Active = 1 AND Id NOT IN @Keep",
+            new { ClientId = clientId, BranchId = branchId, Keep = keepIds, Utc = updatedAtUtc }));
+
+    public async Task<IReadOnlyList<AgendaClientPlan>> ClientPlansAsync(Guid clientId) =>
+        (await conn.QueryAsync<AgendaClientPlan>(Cmd(
+            $"SELECT {AgendaRepository.ClientPlanColumns} FROM AgendaClientPlans WITH (UPDLOCK) WHERE ClientId = @ClientId AND BranchId = @BranchId AND Active = 1",
+            new { ClientId = clientId, BranchId = branchId }))).AsList();
+
+    public Task UpsertClientPlanAsync(AgendaClientPlan p)
+    {
+        const string sql = """
+            UPDATE AgendaClientPlans SET PlanId = @PlanId, Name = @Name, DiscountPercent = @DiscountPercent, ItemsJson = @ItemsJson,
+                   VehicleId = @VehicleId, VehicleType = @VehicleType, FullPrice = @FullPrice, Price = @Price,
+                   StartDate = @StartDate, EndDate = @EndDate, UpdatedAt = @UpdatedAt
+             WHERE Id = @Id AND ClientId = @ClientId AND Active = 1;
+            IF @@ROWCOUNT = 0
+                INSERT INTO AgendaClientPlans (Id, BranchId, ClientId, PlanId, Name, DiscountPercent, ItemsJson, VehicleId, VehicleType,
+                                               FullPrice, Price, StartDate, EndDate, CreatedAt, UpdatedAt, Active)
+                VALUES (@Id, @BranchId, @ClientId, @PlanId, @Name, @DiscountPercent, @ItemsJson, @VehicleId, @VehicleType,
+                        @FullPrice, @Price, @StartDate, @EndDate, @CreatedAt, @UpdatedAt, 1);
+            """;
+        return conn.ExecuteAsync(Cmd(sql, p));
+    }
+
+    public async Task LockPlanMonthAsync(Guid clientPlanId, DateTime date)
+    {
+        const string lockSql = """
+            DECLARE @Result int;
+            EXEC @Result = sp_getapplock @Resource = @Resource, @LockMode = 'Exclusive', @LockOwner = 'Transaction', @LockTimeout = @Timeout;
+            SELECT @Result;
+            """;
+        var resource = $"agenda-plan:{clientPlanId:N}:{date:yyyyMM}";
+        var result = await conn.ExecuteScalarAsync<int>(Cmd(lockSql, new { Resource = resource, Timeout = DayLockTimeoutMs }));
+        if (result < 0) throw new AgendaConflictException("O plano deste cliente está sendo usado em outro agendamento agora. Tente de novo em instantes.");
+    }
+
+    public Task<int> PlanServiceUsageAsync(Guid clientPlanId, string serviceId, DateTime from, DateTime to) =>
+        conn.ExecuteScalarAsync<int>(Cmd(
+            $"""
+            SELECT COUNT(1) FROM AgendaBookings
+             WHERE BranchId = @BranchId AND Active = 1 AND ClientPlanId = @PlanId AND ServiceId = @ServiceId
+               AND [Date] BETWEEN @From AND @To AND Status IN {AgendaRepository.UsedStatuses}
+            """,
+            new { BranchId = branchId, PlanId = clientPlanId, ServiceId = serviceId, From = from.Date, To = to.Date }));
+
+    public async Task<IReadOnlyList<AgendaBooking>> PlanBookingsAfterAsync(Guid clientPlanId, DateTime date) =>
+        (await conn.QueryAsync<AgendaBooking>(Cmd(
+            $"""
+            SELECT {AgendaRepository.BookingColumns} FROM AgendaBookings WITH (UPDLOCK)
+             WHERE BranchId = @BranchId AND Active = 1 AND ClientPlanId = @PlanId AND [Date] > @Date AND Status = 'scheduled'
+            """,
+            new { BranchId = branchId, PlanId = clientPlanId, Date = date.Date }))).AsList();
+
+    public Task ReleaseBookingFromPlanAsync(Guid bookingId, decimal? price, DateTime updatedAtUtc) =>
+        conn.ExecuteAsync(Cmd(
+            "UPDATE AgendaBookings SET ClientPlanId = NULL, Price = @Price, UpdatedAt = @Utc WHERE Id = @Id AND BranchId = @BranchId",
+            new { Id = bookingId, BranchId = branchId, Price = price, Utc = updatedAtUtc }));
+
+    public async Task<IReadOnlyList<AgendaPlanPayment>> PlanPaymentsAsync(Guid clientPlanId) =>
+        (await conn.QueryAsync<AgendaPlanPayment>(Cmd(
+            $"SELECT {AgendaRepository.PlanPaymentColumns} FROM AgendaPlanPayments WITH (UPDLOCK, HOLDLOCK) WHERE ClientPlanId = @PlanId AND BranchId = @BranchId AND Active = 1",
+            new { PlanId = clientPlanId, BranchId = branchId }))).AsList();
+
+    public Task InsertPlanPaymentAsync(AgendaPlanPayment p) =>
+        conn.ExecuteAsync(Cmd(
+            """
+            INSERT INTO AgendaPlanPayments (Id, BranchId, ClientId, ClientPlanId, [Month], Amount, PaidAt, CreatedAt, UpdatedAt, Active)
+            VALUES (@Id, @BranchId, @ClientId, @ClientPlanId, @Month, @Amount, @PaidAt, @CreatedAt, @UpdatedAt, 1)
+            """, p));
+
+    public Task DeactivatePlanPaymentAsync(Guid id, DateTime updatedAtUtc) =>
+        conn.ExecuteAsync(Cmd(
+            "UPDATE AgendaPlanPayments SET Active = 0, UpdatedAt = @Utc WHERE Id = @Id AND BranchId = @BranchId",
+            new { Id = id, BranchId = branchId, Utc = updatedAtUtc }));
 
     public Task InsertReminderAsync(AgendaReminder r)
     {

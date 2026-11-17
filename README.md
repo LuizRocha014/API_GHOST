@@ -94,7 +94,8 @@ No Swagger, use o esquema de segurança indicado na UI (cole o token retornado p
 Rotas em `api/agenda` (todas com JWT), usadas pelo app Flutter *Agenda da Estética*:
 
 - `GET api/agenda/filiais`: filiais que o usuário pode abrir (sem vínculo em `UserCompanyBranches` = todas);
-- `api/agenda/{filialId}/...`: configuração, agendamentos, disponibilidade, bloqueios, lembretes e clientes. O contrato
+- `api/agenda/{filialId}/...`: configuração, agendamentos, disponibilidade, bloqueios, lembretes e clientes (com os
+  carros, VIP, observações e histórico de cada um). O contrato
   está no `docs/contrato-api.md` do app. Erros de regra voltam como `{ "mensagem": "..." }` com 400, 403, 404 ou 409.
 
 A reserva é atômica: a transação pega um lock nomeado do dia da filial (`sp_getapplock`) e revalida o horário, e o
@@ -113,7 +114,8 @@ O Windows pode pedir para liberar a porta 5000 no firewall. Para o app na web, `
 
 Com a API no ar, `python infra/e2e/agenda_e2e.py` passa pelas rotas da agenda contra o banco de verdade: login,
 renovação, filiais, ajustes, disponibilidade, 6 reservas simultâneas no mesmo horário (1 vira 201, 5 viram 409),
-bloqueio, lembrete com envio local, resposta, remarcação, clientes e erros 400/401/403/404. Apaga o que cria.
+bloqueio, lembrete com envio local, resposta, remarcação, cadastro de clientes (carros, VIP, histórico, agendar escolhendo
+cliente e carro) e erros 400/401/403/404/409. Apaga o que cria.
 
 ## Documentação dos endpoints
 

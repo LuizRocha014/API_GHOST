@@ -40,6 +40,76 @@ public sealed class AgendaBooking : Core
 
     /// <summary>Agendamento que este substituiu numa remarcação.</summary>
     public Guid? RescheduledFrom { get; set; }
+
+    /// <summary>Cliente cadastrado do agendamento. Nome, telefone e carro continuam copiados aqui como estavam no dia.</summary>
+    public Guid? ClientId { get; set; }
+    public Guid? VehicleId { get; set; }
+
+    /// <summary>Plano de fidelidade do cliente que cobriu este atendimento (conta no limite do mês). Nulo = cobrado à parte.</summary>
+    public Guid? ClientPlanId { get; set; }
+}
+
+/// <summary>
+/// Plano de fidelidade da filial (o modelo oferecido aos clientes): serviços com quantas vezes por mês cada um
+/// e o desconto sobre o valor cheio. O preço sai da tabela de serviços por tipo de veículo.
+/// </summary>
+public sealed class AgendaLoyaltyPlan : Core
+{
+    public Guid BranchId { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string Description { get; set; } = string.Empty;
+
+    /// <summary>Desconto em % sobre o valor cheio do mês (0 a 100).</summary>
+    public decimal DiscountPercent { get; set; }
+
+    /// <summary>Serviços do plano: <c>[{ "serviceId": "s1", "timesPerMonth": 4 }]</c>.</summary>
+    public string ItemsJson { get; set; } = "[]";
+}
+
+/// <summary>
+/// Plano de fidelidade de um cliente: cópia do modelo (ou montado só para ele) com o preço fechado na adesão
+/// para o carro dele. <see cref="EndDate"/> preenchida = plano encerrado.
+/// </summary>
+public sealed class AgendaClientPlan : Core
+{
+    public Guid BranchId { get; set; }
+    public Guid ClientId { get; set; }
+
+    /// <summary>Modelo de onde saiu. Nulo = plano personalizado.</summary>
+    public Guid? PlanId { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public decimal DiscountPercent { get; set; }
+    public string ItemsJson { get; set; } = "[]";
+
+    /// <summary>Carro coberto. Nulo = qualquer carro do cliente do <see cref="VehicleType"/>.</summary>
+    public Guid? VehicleId { get; set; }
+    public string VehicleType { get; set; } = string.Empty;
+
+    /// <summary>Valor cheio do mês (soma de preço × vezes por mês).</summary>
+    public decimal FullPrice { get; set; }
+
+    /// <summary>Valor do mês com o desconto.</summary>
+    public decimal Price { get; set; }
+    public DateTime StartDate { get; set; }
+    public DateTime? EndDate { get; set; }
+}
+
+/// <summary>
+/// Mensalidade paga de um plano de cliente. Mês do plano sem registro aqui = mensalidade pendente.
+/// <see cref="Amount"/> guarda o valor do plano no dia do pagamento.
+/// </summary>
+public sealed class AgendaPlanPayment : Core
+{
+    public Guid BranchId { get; set; }
+    public Guid ClientId { get; set; }
+    public Guid ClientPlanId { get; set; }
+
+    /// <summary>Primeiro dia do mês pago.</summary>
+    public DateTime Month { get; set; }
+    public decimal Amount { get; set; }
+
+    /// <summary>Quando foi marcada como paga (horário local).</summary>
+    public DateTime PaidAt { get; set; }
 }
 
 /// <summary>Bloqueio pontual (folga, manutenção). <see cref="BoxId"/> nulo = todos os boxes.</summary>
@@ -53,7 +123,10 @@ public sealed class AgendaBlock : Core
     public string Reason { get; set; } = string.Empty;
 }
 
-/// <summary>Cliente da agenda (identificado pelo telefone), com o consentimento do lembrete (LGPD).</summary>
+/// <summary>
+/// Cliente da agenda, com o consentimento do lembrete (LGPD). O bot acha o cliente pelo telefone; no balcão ele
+/// pode ser cadastrado sem telefone (<see cref="Phone"/> vazio).
+/// </summary>
 public sealed class AgendaClient : Core
 {
     public Guid BranchId { get; set; }
@@ -61,6 +134,19 @@ public sealed class AgendaClient : Core
     public string Name { get; set; } = string.Empty;
     public bool ReminderOptIn { get; set; }
     public DateTime? OptInAt { get; set; }
+    public bool Vip { get; set; }
+    public string Notes { get; set; } = string.Empty;
+}
+
+/// <summary>Carro de um cliente. A placa identifica o carro; sem placa, vale o modelo.</summary>
+public sealed class AgendaClientVehicle : Core
+{
+    public Guid BranchId { get; set; }
+    public Guid ClientId { get; set; }
+    public string Vehicle { get; set; } = string.Empty;
+    public string Plate { get; set; } = string.Empty;
+    public string VehicleType { get; set; } = string.Empty;
+    public string Color { get; set; } = string.Empty;
 }
 
 /// <summary>Outbox do lembrete de confirmação (D-1).</summary>

@@ -16,3 +16,6 @@ out/
 ## OS
 Thumbs.db
 .DS_Store
+
+# Python (scripts de teste em infra/)
+__pycache__/

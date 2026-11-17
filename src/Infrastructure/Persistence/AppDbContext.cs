@@ -30,7 +30,11 @@ public sealed class AppDbContext : DbContext
     public DbSet<AgendaBooking> AgendaBookings => Set<AgendaBooking>();
     public DbSet<AgendaBlock> AgendaBlocks => Set<AgendaBlock>();
     public DbSet<AgendaClient> AgendaClients => Set<AgendaClient>();
+    public DbSet<AgendaClientVehicle> AgendaClientVehicles => Set<AgendaClientVehicle>();
     public DbSet<AgendaReminder> AgendaReminders => Set<AgendaReminder>();
+    public DbSet<AgendaLoyaltyPlan> AgendaLoyaltyPlans => Set<AgendaLoyaltyPlan>();
+    public DbSet<AgendaClientPlan> AgendaClientPlans => Set<AgendaClientPlan>();
+    public DbSet<AgendaPlanPayment> AgendaPlanPayments => Set<AgendaPlanPayment>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -246,6 +250,9 @@ public sealed class AppDbContext : DbContext
             e.Property(x => x.UpdatedAt).HasColumnType("datetime2");
             // A reserva trava os agendamentos do dia da filial (UPDLOCK, HOLDLOCK): o índice faz o lock pegar só o dia.
             e.HasIndex(x => new { x.BranchId, x.Date });
+            e.HasIndex(x => new { x.BranchId, x.ClientId });
+            // Uso do plano no mês: conta os agendamentos do plano por serviço e período.
+            e.HasIndex(x => new { x.ClientPlanId, x.Date });
             e.HasOne<Branch>().WithMany().HasForeignKey(x => x.BranchId).OnDelete(DeleteBehavior.Restrict);
         });
 
@@ -269,10 +276,25 @@ public sealed class AppDbContext : DbContext
             e.Property(x => x.Phone).HasMaxLength(AgendaService.MaxPhoneLength);
             e.Property(x => x.Name).HasMaxLength(AgendaService.MaxNameLength);
             e.Property(x => x.OptInAt).HasColumnType("datetime2");
+            e.Property(x => x.Notes).HasMaxLength(AgendaService.MaxNotesLength);
             e.Property(x => x.CreatedAt).HasColumnType("datetime2");
             e.Property(x => x.UpdatedAt).HasColumnType("datetime2");
             e.HasIndex(x => new { x.BranchId, x.Phone });
             e.HasOne<Branch>().WithMany().HasForeignKey(x => x.BranchId).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<AgendaClientVehicle>(e =>
+        {
+            e.ToTable("AgendaClientVehicles");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Vehicle).HasMaxLength(AgendaService.MaxVehicleLength);
+            e.Property(x => x.Plate).HasMaxLength(16);
+            e.Property(x => x.VehicleType).HasMaxLength(16);
+            e.Property(x => x.Color).HasMaxLength(AgendaService.MaxColorLength);
+            e.Property(x => x.CreatedAt).HasColumnType("datetime2");
+            e.Property(x => x.UpdatedAt).HasColumnType("datetime2");
+            e.HasIndex(x => new { x.BranchId, x.ClientId });
+            e.HasOne<AgendaClient>().WithMany().HasForeignKey(x => x.ClientId).OnDelete(DeleteBehavior.Restrict);
         });
 
         modelBuilder.Entity<AgendaReminder>(e =>
@@ -292,6 +314,55 @@ public sealed class AppDbContext : DbContext
             e.HasIndex(x => x.BookingId);
             e.HasIndex(x => x.WamId);
             e.HasOne<AgendaBooking>().WithMany().HasForeignKey(x => x.BookingId).OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<AgendaLoyaltyPlan>(e =>
+        {
+            e.ToTable("AgendaLoyaltyPlans");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Name).HasMaxLength(AgendaService.MaxNameLength);
+            e.Property(x => x.Description).HasMaxLength(AgendaService.MaxNotesLength);
+            e.Property(x => x.DiscountPercent).HasPrecision(5, 2);
+            e.Property(x => x.ItemsJson).HasColumnType("nvarchar(max)");
+            e.Property(x => x.CreatedAt).HasColumnType("datetime2");
+            e.Property(x => x.UpdatedAt).HasColumnType("datetime2");
+            e.HasIndex(x => x.BranchId);
+            e.HasOne<Branch>().WithMany().HasForeignKey(x => x.BranchId).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<AgendaClientPlan>(e =>
+        {
+            e.ToTable("AgendaClientPlans");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Name).HasMaxLength(AgendaService.MaxNameLength);
+            e.Property(x => x.DiscountPercent).HasPrecision(5, 2);
+            e.Property(x => x.ItemsJson).HasColumnType("nvarchar(max)");
+            e.Property(x => x.VehicleType).HasMaxLength(16);
+            e.Property(x => x.FullPrice).HasPrecision(18, 2);
+            e.Property(x => x.Price).HasPrecision(18, 2);
+            e.Property(x => x.StartDate).HasColumnType("date");
+            e.Property(x => x.EndDate).HasColumnType("date");
+            e.Property(x => x.CreatedAt).HasColumnType("datetime2");
+            e.Property(x => x.UpdatedAt).HasColumnType("datetime2");
+            e.HasIndex(x => new { x.BranchId, x.ClientId });
+            e.HasIndex(x => x.PlanId);
+            e.HasOne<AgendaClient>().WithMany().HasForeignKey(x => x.ClientId).OnDelete(DeleteBehavior.Restrict);
+            e.HasOne<AgendaLoyaltyPlan>().WithMany().HasForeignKey(x => x.PlanId).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<AgendaPlanPayment>(e =>
+        {
+            e.ToTable("AgendaPlanPayments");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Month).HasColumnType("date");
+            e.Property(x => x.Amount).HasPrecision(18, 2);
+            e.Property(x => x.PaidAt).HasColumnType("datetime2");
+            e.Property(x => x.CreatedAt).HasColumnType("datetime2");
+            e.Property(x => x.UpdatedAt).HasColumnType("datetime2");
+            // Um pagamento por mês e plano; desfeito (Active = 0) libera o mês para pagar de novo.
+            e.HasIndex(x => new { x.ClientPlanId, x.Month }).IsUnique().HasFilter("[Active] = 1");
+            e.HasIndex(x => new { x.BranchId, x.ClientId });
+            e.HasOne<AgendaClientPlan>().WithMany().HasForeignKey(x => x.ClientPlanId).OnDelete(DeleteBehavior.Restrict);
         });
     }
 }

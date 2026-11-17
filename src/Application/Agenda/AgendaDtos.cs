@@ -22,7 +22,10 @@ public sealed record BookingDto(
     string Origin,
     string CreatedAt,
     string UpdatedAt,
-    string? RescheduledFrom);
+    string? RescheduledFrom,
+    string? ClientId,
+    string? VehicleId,
+    string? ClientPlanId);
 
 public sealed class NewBookingRequest
 {
@@ -40,6 +43,15 @@ public sealed class NewBookingRequest
     public string? Notes { get; set; }
     public string? Origin { get; set; }
     public bool ReminderOptIn { get; set; } = true;
+
+    /// <summary>Cliente cadastrado escolhido no balcão. Nulo = acha (ou cria) o cliente pelo telefone.</summary>
+    public string? ClientId { get; set; }
+
+    /// <summary>Carro do cliente. Nulo = acha pela placa (ou pelo modelo) e cadastra se for novo.</summary>
+    public string? VehicleId { get; set; }
+
+    /// <summary>Usa o plano de fidelidade do cliente quando ele cobre o serviço e ainda há uso no mês. Falso = cobra à parte.</summary>
+    public bool UsePlan { get; set; } = true;
 }
 
 public sealed class RescheduleRequest
@@ -67,7 +79,61 @@ public sealed class NewBlockRequest
     public string? Reason { get; set; }
 }
 
-public sealed record ClientDto(string Phone, string Name, bool ReminderOptIn, string? OptInAt);
+public sealed record ClientDto(
+    string Id,
+    string Phone,
+    string Name,
+    bool ReminderOptIn,
+    string? OptInAt,
+    bool Vip,
+    string Notes,
+    IReadOnlyList<ClientVehicleDto> Vehicles,
+    ClientStatsDto Stats,
+    IReadOnlyList<string> PlanNames,
+    int PendingCharges);
+
+public sealed record ClientVehicleDto(string Id, string Vehicle, string Plate, string VehicleType, string Color);
+
+/// <summary>Histórico do cliente na filial. <c>LastVisit</c>: dia do último concluído; <c>NextVisit</c>: próximo agendado ('AAAA-MM-DDTHH:mm').</summary>
+public sealed record ClientStatsDto(int Done, int NoShow, int Canceled, int Upcoming, decimal TotalSpent, string? LastVisit, string? NextVisit)
+{
+    public static readonly ClientStatsDto Empty = new(0, 0, 0, 0, 0, null, null);
+}
+
+/// <summary>Cadastro do cliente feito no app (tela de Clientes). Os carros vêm inteiros: os que faltarem saem.</summary>
+public sealed class ClientFormRequest
+{
+    public string? Name { get; set; }
+    public string? Phone { get; set; }
+    public bool ReminderOptIn { get; set; }
+    public bool Vip { get; set; }
+    public string? Notes { get; set; }
+    public List<ClientVehicleRequest>? Vehicles { get; set; }
+}
+
+public sealed class ClientVehicleRequest
+{
+    /// <summary>Nulo = carro novo.</summary>
+    public string? Id { get; set; }
+    public string? Vehicle { get; set; }
+    public string? Plate { get; set; }
+    public string? VehicleType { get; set; }
+    public string? Color { get; set; }
+}
+
+/// <summary>Linha agregada dos agendamentos de um cliente (lida pelo repositório).</summary>
+public sealed class ClientStatsRow
+{
+    public Guid ClientId { get; set; }
+    public int Done { get; set; }
+    public int NoShow { get; set; }
+    public int Canceled { get; set; }
+    public int Upcoming { get; set; }
+    public decimal TotalSpent { get; set; }
+    public DateTime? LastVisit { get; set; }
+    public DateTime? NextDate { get; set; }
+    public int? NextStart { get; set; }
+}
 
 public sealed class ClientRequest
 {
