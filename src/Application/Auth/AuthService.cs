@@ -32,15 +32,22 @@ public sealed class AuthService : IAuthService
         if (!_passwordHasher.Verify(request.Password, user.PasswordHash))
             return null;
 
-        var token = _jwt.CreateToken(user);
-        return new LoginResponse
-        {
-            AccessToken = token,
-            ExpiresInMinutes = _jwtOptions.ExpiresMinutes,
-            UserId = user.Id,
-            Username = user.Username,
-            Email = user.Email,
-            Name = user.Name
-        };
+        return Issue(user);
     }
+
+    public async Task<LoginResponse?> RenewAsync(Guid userId, CancellationToken cancellationToken = default)
+    {
+        var user = await _users.GetByIdAsync(userId, cancellationToken);
+        return user is null || !user.Active ? null : Issue(user);
+    }
+
+    private LoginResponse Issue(Domain.Entities.User user) => new()
+    {
+        AccessToken = _jwt.CreateToken(user),
+        ExpiresInMinutes = _jwtOptions.ExpiresMinutes,
+        UserId = user.Id,
+        Username = user.Username,
+        Email = user.Email,
+        Name = user.Name
+    };
 }

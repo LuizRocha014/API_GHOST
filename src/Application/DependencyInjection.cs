@@ -1,4 +1,5 @@
 using Application.Accesses;
+using Application.Agenda;
 using Application.Auth;
 using Application.Branches;
 using Application.Companies;
@@ -26,6 +27,7 @@ public static class DependencyInjection
         services.AddScoped<IProductImageService, ProductImageService>();
         services.AddScoped<IProductBatchService, ProductBatchService>();
         services.AddScoped<IUserBranchAccessService, UserBranchAccessService>();
+        services.AddScoped<IAgendaService, AgendaService>();
         return services;
     }
 }

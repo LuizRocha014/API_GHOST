@@ -1,0 +1,234 @@
+using System.Globalization;
+using Domain.Agenda;
+
+namespace Application.Agenda;
+
+/// <summary>Intervalo em minutos do dia.</summary>
+public readonly record struct MinuteRange(int Start, int End)
+{
+    public int Length => End - Start;
+}
+
+/// <summary>Agendamento ou bloqueio que ocupa um box num dia.</summary>
+public sealed record BusyItem(Guid? BookingId, string? BoxId, int Start, int End);
+
+/// <summary>
+/// Cálculo de disponibilidade: funções puras (entra dado, sai lista), as mesmas regras do app.
+/// A disponibilidade vem de horário de funcionamento − bloqueios − agendamentos ativos.
+/// </summary>
+public static class AvailabilityRules
+{
+    public static int WeekdayIndex(DateTime date) => (int)date.DayOfWeek; // 0 = domingo
+
+    public static MinuteRange? HoursOf(AgendaConfigModel cfg, DateTime date)
+    {
+        var i = WeekdayIndex(date);
+        if (i >= cfg.Hours.Count) return null;
+        var h = cfg.Hours[i];
+        return h is { Length: 2 } && h[1] > h[0] ? new MinuteRange(h[0], h[1]) : null;
+    }
+
+    public static int CeilTo(int m, int step) => (m + step - 1) / step * step;
+
+    /// <summary>Intervalos ocupados de um box (agendamentos ativos + bloqueios), ordenados e mesclados.</summary>
+    public static List<MinuteRange> BusyIntervals(string boxId, IEnumerable<BusyItem> bookings, IEnumerable<BusyItem> blocks, Guid? ignoreBookingId)
+    {
+        var raw = bookings
+            .Where(b => b.BoxId == boxId && b.BookingId != ignoreBookingId)
+            .Concat(blocks.Where(k => k.BoxId is null || k.BoxId == boxId))
+            .Select(x => new MinuteRange(x.Start, x.End))
+            .OrderBy(x => x.Start)
+            .ToList();
+        var merged = new List<MinuteRange>();
+        foreach (var iv in raw)
+        {
+            if (merged.Count > 0 && iv.Start <= merged[^1].End)
+                merged[^1] = merged[^1] with { End = Math.Max(merged[^1].End, iv.End) };
+            else
+                merged.Add(iv);
+        }
+        return merged;
+    }
+
+    public static List<MinuteRange> FreeWindows(MinuteRange hours, IReadOnlyList<MinuteRange> busy, int from)
+    {
+        var cur = Math.Max(hours.Start, from);
+        var output = new List<MinuteRange>();
+        foreach (var iv in busy)
+        {
+            if (iv.End <= cur) continue;
+            if (iv.Start >= hours.End) break;
+            if (iv.Start > cur) output.Add(new MinuteRange(cur, iv.Start));
+            cur = Math.Max(cur, iv.End);
+            if (cur >= hours.End) break;
+        }
+        if (cur < hours.End) output.Add(new MinuteRange(cur, hours.End));
+        return output;
+    }
+
+    /// <summary>
+    /// Horários de início livres para <paramref name="duration"/> minutos. Cada horário traz os boxes
+    /// possíveis, do que deixa menos buraco na agenda para o que deixa mais.
+    /// </summary>
+    public static List<SlotOptionDto> AvailableStarts(
+        AgendaConfigModel cfg,
+        DateTime date,
+        string serviceId,
+        int duration,
+        IReadOnlyList<BusyItem> bookings,
+        IReadOnlyList<BusyItem> blocks,
+        DateTime nowLocal,
+        int minNoticeMin,
+        Guid? ignoreBookingId)
+    {
+        var hours = HoursOf(cfg, date);
+        if (hours is null || duration <= 0) return [];
+        var today = nowLocal.Date;
+        if (date.Date < today) return [];
+        var step = cfg.Step > 0 ? cfg.Step : 30;
+        var from = hours.Value.Start;
+        if (date.Date == today)
+            from = Math.Max(from, CeilTo((int)nowLocal.TimeOfDay.TotalMinutes + Math.Max(0, minNoticeMin), step));
+
+        var byStart = new SortedDictionary<int, List<(string Id, int Slack, int Order)>>();
+        for (var order = 0; order < cfg.Boxes.Count; order++)
+        {
+            var box = cfg.Boxes[order];
+            if (!box.Serves(serviceId)) continue;
+            var busy = BusyIntervals(box.Id, bookings, blocks, ignoreBookingId);
+            foreach (var g in FreeWindows(hours.Value, busy, from))
+            {
+                for (var t = CeilTo(g.Start, step); t + duration <= g.End; t += step)
+                {
+                    if (!byStart.TryGetValue(t, out var list)) byStart[t] = list = [];
+                    list.Add((box.Id, g.End - (t + duration) + (t - g.Start), order));
+                }
+            }
+        }
+
+        return byStart
+            .Select(kv => new SlotOptionDto(
+                kv.Key,
+                kv.Key + duration,
+                kv.Value.OrderBy(x => x.Slack).ThenBy(x => x.Order).Select(x => x.Id).ToList()))
+            .ToList();
+    }
+}
+
+/// <summary>Horário do lembrete D-1 (mesmas regras do app).</summary>
+public static class ReminderRules
+{
+    public static DateTime? SendTime(DateTime date, int start, DateTime createdAtLocal, ReminderPolicyModel policy)
+    {
+        var startsAt = date.Date.AddMinutes(start);
+        if (startsAt - createdAtLocal < TimeSpan.FromHours(policy.MinLeadHours)) return null;
+
+        var windowStart = Math.Min(policy.WindowStart, policy.WindowEnd);
+        var windowEnd = Math.Max(policy.WindowStart, policy.WindowEnd);
+        var sendAt = Math.Clamp(policy.SendAt, windowStart, windowEnd);
+        var daysBefore = date.DayOfWeek == DayOfWeek.Monday && policy.MondayPolicy == "saturday" ? 2 : 1;
+
+        var candidate = date.Date.AddDays(-daysBefore).AddMinutes(sendAt);
+        if (candidate <= createdAtLocal)
+        {
+            candidate = new DateTime(createdAtLocal.Year, createdAtLocal.Month, createdAtLocal.Day, createdAtLocal.Hour, createdAtLocal.Minute, 0)
+                .AddMinutes(1);
+            var m = (int)candidate.TimeOfDay.TotalMinutes;
+            if (m < windowStart) candidate = candidate.Date.AddMinutes(windowStart);
+            else if (m > windowEnd) candidate = candidate.Date.AddDays(1).AddMinutes(windowStart);
+        }
+
+        // Lembrete que sairia a menos de 2h do horário não ajuda ninguém.
+        return candidate > startsAt.AddHours(-2) ? null : candidate;
+    }
+}
+
+/// <summary>Telefone, placa e formatos de data/hora do contrato.</summary>
+public static class AgendaFormat
+{
+    public static string OnlyDigits(string? s) => new((s ?? string.Empty).Where(char.IsDigit).ToArray());
+
+    /// <summary>Telefone digitado → E.164 só com dígitos (acrescenta 55 quando vem só DDD + número).</summary>
+    public static string NormalizePhone(string? input)
+    {
+        var d = OnlyDigits(input);
+        return d.Length is 10 or 11 ? "55" + d : d;
+    }
+
+    /// <summary>
+    /// O WhatsApp ainda entrega alguns celulares brasileiros sem o nono dígito. Para achar o cliente,
+    /// as duas formas valem: devolve as variantes a procurar.
+    /// </summary>
+    public static IReadOnlyList<string> PhoneVariants(string? input)
+    {
+        var p = NormalizePhone(input);
+        if (p.Length == 13 && p.StartsWith("55") && p[4] == '9') return [p, p[..4] + p[5..]];
+        if (p.Length == 12 && p.StartsWith("55") && p[4] is >= '6' and <= '9') return [p, p[..4] + "9" + p[4..]];
+        return [p];
+    }
+
+    public static string NormalizePlate(string? s)
+    {
+        var p = new string((s ?? string.Empty).ToUpperInvariant().Where(char.IsAsciiLetterOrDigit).ToArray());
+        return p.Length > 7 ? p[..7] : p;
+    }
+
+    public static string Date(DateTime d) => d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+
+    public static DateTime ParseDate(string? s) =>
+        DateTime.TryParseExact(s, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var d)
+            ? d
+            : throw new AgendaValidationException("Data inválida (use AAAA-MM-DD).");
+
+    /// <summary>'2026-11-07T10:00' (horário local).</summary>
+    public static string LocalDateTime(DateTime d) => d.ToString("yyyy-MM-dd'T'HH:mm", CultureInfo.InvariantCulture);
+
+    public static DateTime ParseLocalDateTime(string? s) =>
+        DateTime.TryParseExact(s, ["yyyy-MM-dd'T'HH:mm", "yyyy-MM-dd'T'HH:mm:ss"], CultureInfo.InvariantCulture, DateTimeStyles.None, out var d)
+            ? d
+            : throw new AgendaValidationException("Data e hora inválidas (use AAAA-MM-DDTHH:mm).");
+
+    public static string Hm(int m) => $"{m / 60:00}:{m % 60:00}";
+}
+
+public static class AgendaMapping
+{
+    public static BookingDto ToDto(this AgendaBooking b) => new(
+        b.Id.ToString(),
+        AgendaFormat.Date(b.Date),
+        b.StartMin,
+        b.EndMin,
+        b.BoxId,
+        b.ServiceId,
+        b.ServiceName,
+        b.Price,
+        b.VehicleType,
+        b.Vehicle,
+        b.Plate,
+        b.ClientName,
+        b.Phone,
+        b.Notes,
+        b.Status,
+        b.Origin,
+        DateTime.SpecifyKind(b.CreatedAt, DateTimeKind.Utc).ToString("O", CultureInfo.InvariantCulture),
+        DateTime.SpecifyKind(b.UpdatedAt, DateTimeKind.Utc).ToString("O", CultureInfo.InvariantCulture),
+        b.RescheduledFrom?.ToString());
+
+    public static BlockDto ToDto(this AgendaBlock k) =>
+        new(k.Id.ToString(), k.BoxId, AgendaFormat.Date(k.Date), k.StartMin, k.EndMin, k.Reason);
+
+    public static ClientDto ToDto(this AgendaClient c) =>
+        new(c.Phone, c.Name, c.ReminderOptIn, c.OptInAt is null ? null : AgendaFormat.LocalDateTime(c.OptInAt.Value));
+
+    public static ReminderDto ToDto(this AgendaReminder r) => new(
+        r.Id.ToString(),
+        r.BookingId.ToString(),
+        r.Type,
+        AgendaFormat.LocalDateTime(r.ScheduledFor),
+        r.Status,
+        r.Attempts,
+        r.WamId,
+        r.Answer,
+        r.AnsweredAt is null ? null : AgendaFormat.LocalDateTime(r.AnsweredAt.Value),
+        r.Error);
+}

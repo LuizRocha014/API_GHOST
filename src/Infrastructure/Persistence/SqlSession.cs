@@ -12,10 +12,7 @@ public sealed class SqlSession : IDisposable, IAsyncDisposable
 
     public SqlSession(IConfiguration configuration)
     {
-        var cs = configuration.GetConnectionString("DefaultConnection")
-                 ?? throw new InvalidOperationException(
-                     "Defina ConnectionStrings:DefaultConnection (ex.: SQL Server LocalDB ou instância nomeada).");
-        Connection = new SqlConnection(cs);
+        Connection = new SqlConnection(DatabaseConnection.Resolve(configuration));
         Connection.Open();
     }
 

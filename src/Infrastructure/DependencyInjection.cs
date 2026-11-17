@@ -1,4 +1,5 @@
 using Application.Abstractions;
+using Infrastructure.Agenda;
 using Infrastructure.Persistence;
 using Infrastructure.Security;
 using Microsoft.EntityFrameworkCore;
@@ -12,10 +13,7 @@ public static class DependencyInjection
     public static IServiceCollection AddInfrastructure(this IServiceCollection services, IConfiguration configuration)
     {
         services.AddDbContext<AppDbContext>(options =>
-            options.UseSqlServer(
-                configuration.GetConnectionString("DefaultConnection")
-                ?? throw new InvalidOperationException(
-                    "Defina ConnectionStrings:DefaultConnection (ex.: SQL Server LocalDB ou instância nomeada).")));
+            options.UseSqlServer(DatabaseConnection.Resolve(configuration), sql => sql.EnableRetryOnFailure(3)));
 
         services.AddScoped<SqlSession>();
 
@@ -30,6 +28,11 @@ public static class DependencyInjection
         services.AddScoped<IInventoryRepository, InventoryRepository>();
         services.AddScoped<IUserCompanyBranchRepository, UserCompanyBranchRepository>();
         services.AddScoped<IJwtTokenService, JwtTokenService>();
+
+        // Agenda da estética
+        services.AddScoped<IAgendaRepository, AgendaRepository>();
+        services.AddSingleton<IAgendaClock, AgendaClock>();
+        services.AddScoped<IReminderSender, LocalReminderSender>();
         return services;
     }
 }

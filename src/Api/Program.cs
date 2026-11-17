@@ -1,4 +1,5 @@
 using System.Text;
+using Api.Agenda;
 using Api.Swagger;
 using Application;
 using Application.Abstractions;
@@ -83,7 +84,24 @@ builder.Services.AddSwaggerGen(c =>
 builder.Services.AddApplication();
 builder.Services.AddInfrastructure(builder.Configuration);
 
+// CORS para o app da agenda no navegador (Flutter web). Celular e desktop não precisam.
+const string CorsPolicy = "app";
+builder.Services.AddCors(options => options.AddPolicy(CorsPolicy, policy =>
+{
+    var origins = builder.Configuration.GetSection("Cors:Origins").Get<string[]>() ?? [];
+    if (builder.Configuration.GetValue("Cors:AllowAnyOrigin", false))
+        policy.AllowAnyOrigin();
+    else
+        policy.WithOrigins(origins);
+    policy.AllowAnyHeader().AllowAnyMethod();
+}));
+
+if (builder.Configuration.GetValue("Agenda:ReminderWorker:Enabled", true))
+    builder.Services.AddHostedService<ReminderWorker>();
+
 var app = builder.Build();
+
+app.Logger.LogInformation("Banco: {Database}", DatabaseConnection.Describe(app.Configuration));
 
 await using (var scope = app.Services.CreateAsyncScope())
 {
@@ -98,7 +116,10 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-app.UseHttpsRedirection();
+// Em desenvolvimento o app fala em HTTP com a API na rede local; o redirecionamento quebraria o CORS.
+if (!app.Environment.IsDevelopment())
+    app.UseHttpsRedirection();
+app.UseCors(CorsPolicy);
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();

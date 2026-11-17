@@ -1,3 +1,5 @@
+using Application.Agenda;
+using Domain.Agenda;
 using Domain.Entities;
 using Microsoft.EntityFrameworkCore;
 
@@ -24,6 +26,11 @@ public sealed class AppDbContext : DbContext
     public DbSet<ProductionItem> ProductionItems => Set<ProductionItem>();
     public DbSet<Access> Accesses => Set<Access>();
     public DbSet<UserCompanyBranch> UserCompanyBranches => Set<UserCompanyBranch>();
+    public DbSet<AgendaSettings> AgendaSettings => Set<AgendaSettings>();
+    public DbSet<AgendaBooking> AgendaBookings => Set<AgendaBooking>();
+    public DbSet<AgendaBlock> AgendaBlocks => Set<AgendaBlock>();
+    public DbSet<AgendaClient> AgendaClients => Set<AgendaClient>();
+    public DbSet<AgendaReminder> AgendaReminders => Set<AgendaReminder>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -196,6 +203,95 @@ public sealed class AppDbContext : DbContext
                 .HasForeignKey(x => x.OutputBatchId)
                 .HasConstraintName("FK_ProductionItems_OutputBatch")
                 .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        ConfigureAgenda(modelBuilder);
+    }
+
+    /// <summary>
+    /// Tabelas da agenda da estética. Os repositórios leem e gravam com Dapper; o EF só cria o esquema.
+    /// Datas da agenda são locais (fuso da estética) em <c>date</c>; horários em minutos desde 00:00.
+    /// </summary>
+    private static void ConfigureAgenda(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<AgendaSettings>(e =>
+        {
+            e.ToTable("AgendaSettings");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.ConfigJson).HasColumnType("nvarchar(max)");
+            e.Property(x => x.CreatedAt).HasColumnType("datetime2");
+            e.Property(x => x.UpdatedAt).HasColumnType("datetime2");
+            e.HasIndex(x => x.BranchId).IsUnique();
+            e.HasOne<Branch>().WithMany().HasForeignKey(x => x.BranchId).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<AgendaBooking>(e =>
+        {
+            e.ToTable("AgendaBookings");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Date).HasColumnType("date");
+            e.Property(x => x.BoxId).HasMaxLength(AgendaService.MaxIdLength);
+            e.Property(x => x.ServiceId).HasMaxLength(AgendaService.MaxIdLength);
+            e.Property(x => x.ServiceName).HasMaxLength(AgendaService.MaxNameLength);
+            e.Property(x => x.Price).HasPrecision(18, 2);
+            e.Property(x => x.VehicleType).HasMaxLength(16);
+            e.Property(x => x.Vehicle).HasMaxLength(AgendaService.MaxVehicleLength);
+            e.Property(x => x.Plate).HasMaxLength(16);
+            e.Property(x => x.ClientName).HasMaxLength(AgendaService.MaxNameLength);
+            e.Property(x => x.Phone).HasMaxLength(AgendaService.MaxPhoneLength);
+            e.Property(x => x.Notes).HasMaxLength(AgendaService.MaxNotesLength);
+            e.Property(x => x.Status).HasMaxLength(16);
+            e.Property(x => x.Origin).HasMaxLength(16);
+            e.Property(x => x.CreatedAt).HasColumnType("datetime2");
+            e.Property(x => x.UpdatedAt).HasColumnType("datetime2");
+            // A reserva trava os agendamentos do dia da filial (UPDLOCK, HOLDLOCK): o índice faz o lock pegar só o dia.
+            e.HasIndex(x => new { x.BranchId, x.Date });
+            e.HasOne<Branch>().WithMany().HasForeignKey(x => x.BranchId).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<AgendaBlock>(e =>
+        {
+            e.ToTable("AgendaBlocks");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Date).HasColumnType("date");
+            e.Property(x => x.BoxId).HasMaxLength(AgendaService.MaxIdLength);
+            e.Property(x => x.Reason).HasMaxLength(AgendaService.MaxReasonLength);
+            e.Property(x => x.CreatedAt).HasColumnType("datetime2");
+            e.Property(x => x.UpdatedAt).HasColumnType("datetime2");
+            e.HasIndex(x => new { x.BranchId, x.Date });
+            e.HasOne<Branch>().WithMany().HasForeignKey(x => x.BranchId).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<AgendaClient>(e =>
+        {
+            e.ToTable("AgendaClients");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Phone).HasMaxLength(AgendaService.MaxPhoneLength);
+            e.Property(x => x.Name).HasMaxLength(AgendaService.MaxNameLength);
+            e.Property(x => x.OptInAt).HasColumnType("datetime2");
+            e.Property(x => x.CreatedAt).HasColumnType("datetime2");
+            e.Property(x => x.UpdatedAt).HasColumnType("datetime2");
+            e.HasIndex(x => new { x.BranchId, x.Phone });
+            e.HasOne<Branch>().WithMany().HasForeignKey(x => x.BranchId).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<AgendaReminder>(e =>
+        {
+            e.ToTable("AgendaReminders");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Type).HasMaxLength(32);
+            e.Property(x => x.ScheduledFor).HasColumnType("datetime2");
+            e.Property(x => x.Status).HasMaxLength(16);
+            e.Property(x => x.WamId).HasMaxLength(128);
+            e.Property(x => x.Answer).HasMaxLength(16);
+            e.Property(x => x.AnsweredAt).HasColumnType("datetime2");
+            e.Property(x => x.Error).HasMaxLength(AgendaService.MaxErrorLength);
+            e.Property(x => x.CreatedAt).HasColumnType("datetime2");
+            e.Property(x => x.UpdatedAt).HasColumnType("datetime2");
+            e.HasIndex(x => new { x.BranchId, x.Status, x.ScheduledFor });
+            e.HasIndex(x => x.BookingId);
+            e.HasIndex(x => x.WamId);
+            e.HasOne<AgendaBooking>().WithMany().HasForeignKey(x => x.BookingId).OnDelete(DeleteBehavior.Cascade);
         });
     }
 }

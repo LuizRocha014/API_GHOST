@@ -22,15 +22,30 @@ Arquivo de solução: `API_GHOST.sln`.
 
 ### Banco de dados
 
-Defina a string de conexão `ConnectionStrings:DefaultConnection` (por exemplo em `src/Api/appsettings.Development.json` ou variáveis de ambiente).
+`Database:Target` escolhe qual entrada de `ConnectionStrings` a API usa (sem ele, vale `DefaultConnection`):
+
+| Target | Banco | Onde |
+|---|---|---|
+| `Remote` | `sql.bsite.net` | padrão do `appsettings.json` |
+| `Express` | SQL Server Express (`localhost,1433`, banco `AgendaGhost`, login do Windows) | padrão em Development |
+
+Para trocar sem mexer no arquivo: variável de ambiente `Database__Target=Remote` (ou `Express`).
+
+**SQL Server Express local ou numa VM.** Rode, como administrador, `infra/sqlserver/windows/instalar-sqlexpress.ps1`.
+Ele baixa a mídia oficial, instala a instância `SQLEXPRESS` na porta 1433, abre o firewall, cria o banco `AgendaGhost` e
+o login `ghost_api` e grava as connection strings (local e remota, com a senha) em `%USERPROFILE%\.api_ghost\sqlexpress.txt`,
+fora do repositório. Numa VM na nuvem, abra também a porta 1433 no grupo de segurança e, na máquina da API, defina
+`ConnectionStrings__Express` com a string remota desse arquivo.
 
 **Importante:** não commite senhas ou chaves reais. Use [User Secrets](https://learn.microsoft.com/aspnet/core/security/app-secrets) no desenvolvimento:
 
 ```bash
 cd src/Api
 dotnet user-secrets init
-dotnet user-secrets set "ConnectionStrings:DefaultConnection" "SUA_CONNECTION_STRING"
+dotnet user-secrets set "ConnectionStrings:Express" "SUA_CONNECTION_STRING"
 ```
+
+O log de inicialização mostra qual banco foi usado (`Banco: Express: servidor localhost,1433, banco AgendaGhost (Windows)`), sem senha.
 
 ### JWT
 
@@ -70,8 +85,35 @@ Em ambiente **Development**, o Swagger UI fica disponível em `/swagger`.
 
 1. `POST /api/auth/login` com `username` e `password` (endpoint anônimo).
 2. Nos demais endpoints, envie o JWT no cabeçalho `Authorization` como `Bearer <token>` ou apenas o valor do token, conforme configurado no projeto.
+3. `POST /api/auth/renovar` troca um token ainda válido por outro com validade nova (o app da agenda usa para não deslogar no meio do dia).
 
 No Swagger, use o esquema de segurança indicado na UI (cole o token retornado pelo login).
+
+## Agenda da estética
+
+Rotas em `api/agenda` (todas com JWT), usadas pelo app Flutter *Agenda da Estética*:
+
+- `GET api/agenda/filiais`: filiais que o usuário pode abrir (sem vínculo em `UserCompanyBranches` = todas);
+- `api/agenda/{filialId}/...`: configuração, agendamentos, disponibilidade, bloqueios, lembretes e clientes. O contrato
+  está no `docs/contrato-api.md` do app. Erros de regra voltam como `{ "mensagem": "..." }` com 400, 403, 404 ou 409.
+
+A reserva é atômica: a transação pega um lock nomeado do dia da filial (`sp_getapplock`) e revalida o horário, e o
+lembrete D-1 entra na mesma transação. O `ReminderWorker` envia os lembretes vencidos a cada minuto
+(`Agenda:ReminderWorker`). Sem WhatsApp configurado, o envio só é registrado no log (`LocalReminderSender`). As datas da
+agenda são do fuso `Agenda:TimeZone` (padrão `America/Sao_Paulo`), então a API pode rodar num servidor em UTC.
+
+Para o app no celular alcançar a API pela rede, use o perfil `rede` (escuta em todas as interfaces, IPv4 e IPv6, na porta 5000):
+
+```bash
+dotnet run --project src/Api --launch-profile rede
+```
+
+O Windows pode pedir para liberar a porta 5000 no firewall. Para o app na web, `Cors:Origins` lista as origens permitidas
+(em Development qualquer origem é aceita).
+
+Com a API no ar, `python infra/e2e/agenda_e2e.py` passa pelas rotas da agenda contra o banco de verdade: login,
+renovação, filiais, ajustes, disponibilidade, 6 reservas simultâneas no mesmo horário (1 vira 201, 5 viram 409),
+bloqueio, lembrete com envio local, resposta, remarcação, clientes e erros 400/401/403/404. Apaga o que cria.
 
 ## Documentação dos endpoints
 
