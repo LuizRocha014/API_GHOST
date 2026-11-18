@@ -110,7 +110,8 @@ O cliente agenda sozinho pelo WhatsApp (serviço, tipo do veículo, dia, horári
 Confirmar, Remarcar ou Cancelar. Webhook em `api/whatsapp/webhook` (assinatura `X-Hub-Signature-256` conferida), fila
 em memória e o `BotWorker` processando; sessão, ids já processados e conversa ficam nas tabelas `BotSessions`,
 `BotProcessedMessages` e `BotMessages`. Sem WhatsApp, `POST api/agenda/{filial}/bot/mensagens` conversa com o bot pela
-API. Configuração, passo a passo da Meta, túnel para desenvolvimento e limitações: [`docs/whatsapp-bot.md`](docs/whatsapp-bot.md).
+API. O cliente também vê, remarca e cancela os horários dele, escolhe um carro cadastrado, vê o plano de fidelidade e
+pede endereço e preços; a equipe responde pela caixa de entrada (`api/agenda/{filial}/bot/conversas`). Configuração, passo a passo da Meta, túnel para desenvolvimento e limitações: [`docs/whatsapp-bot.md`](docs/whatsapp-bot.md).
 
 Para o app no celular alcançar a API pela rede, use o perfil `rede` (escuta em todas as interfaces, IPv4 e IPv6, na porta 5000):
 
@@ -126,8 +127,9 @@ renovação, filiais, ajustes, disponibilidade, 6 reservas simultâneas no mesmo
 bloqueio, lembrete com envio local, resposta, remarcação, cadastro de clientes (carros, VIP, histórico, agendar escolhendo
 cliente e carro) e erros 400/401/403/404/409. Apaga o que cria.
 
-`python infra/e2e/bot_e2e.py` faz o mesmo com o bot do WhatsApp (64 verificações: conversa completa pelo simulador e
-webhook assinado, com status de entrega e botão do template). Precisa dos segredos de desenvolvimento do WhatsApp nos
+`python infra/e2e/bot_e2e.py` faz o mesmo com o bot do WhatsApp (111 verificações: conversa completa pelo simulador,
+webhook assinado com status de entrega e botão do template, meus agendamentos, carros e plano do cliente, proteções e a
+caixa de entrada da equipe). Precisa dos segredos de desenvolvimento do WhatsApp nos
 user-secrets; ver [`docs/whatsapp-bot.md`](docs/whatsapp-bot.md).
 
 ## Documentação dos endpoints

@@ -243,7 +243,8 @@ public static class AgendaMapping
                 stats.LastVisit is null ? null : AgendaFormat.Date(stats.LastVisit.Value),
                 stats.NextDate is null ? null : AgendaFormat.LocalDateTime(stats.NextDate.Value.AddMinutes(stats.NextStart ?? 0))),
         planNames,
-        pendingCharges);
+        pendingCharges,
+        c.BotBlocked);
 
     public static ClientVehicleDto ToDto(this AgendaClientVehicle v) =>
         new(v.Id.ToString(), v.Vehicle, v.Plate, v.VehicleType, v.Color);

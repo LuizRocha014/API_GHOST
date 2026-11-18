@@ -296,27 +296,52 @@ public sealed class AgendaController(IAgendaService agenda) : ControllerBase
         return Ok(new BotSimulationResponse(session?.State ?? BotStates.Idle, channel.Sent.Select(m => m.ToDto()).ToList()));
     }
 
-    /// <summary>Conversa do bot com o número: passo atual e as últimas mensagens (entrada e saída).</summary>
+    /// <summary>
+    /// Caixa de entrada: conversas dos últimos 30 dias, da mais recente para a mais antiga, com o passo do bot,
+    /// quem pediu atendente, as não lidas e se a janela de 24 h está aberta.
+    /// </summary>
+    [HttpGet("{branchId:guid}/bot/conversas")]
+    public async Task<ActionResult<IReadOnlyList<BotConversationSummaryDto>>> BotConversations(
+        Guid branchId, [FromServices] BotInboxService inbox, [FromQuery] int limite = 100, CancellationToken ct = default) =>
+        Ok(await inbox.ListAsync(branchId, limite, ct));
+
+    /// <summary>Conversa com o número: passo atual, as últimas mensagens (cliente, bot e equipe) e a janela de 24 h.</summary>
     [HttpGet("{branchId:guid}/bot/conversas/{telefone}")]
     public async Task<ActionResult<BotConversationDto>> BotConversation(
-        Guid branchId, string telefone, [FromServices] IBotStore store, [FromQuery] int limite = 50, CancellationToken ct = default)
+        Guid branchId, string telefone, [FromServices] BotInboxService inbox, [FromQuery] int limite = 100, CancellationToken ct = default) =>
+        Ok(await inbox.GetAsync(branchId, telefone, Math.Clamp(limite, 1, 500), ct));
+
+    /// <summary>A equipe responde pelo WhatsApp (só dentro da janela de 24 h). A conversa passa para a equipe.</summary>
+    [HttpPost("{branchId:guid}/bot/conversas/{telefone}/responder")]
+    public async Task<ActionResult<BotLogDto>> ReplyConversation(
+        Guid branchId, string telefone, [FromBody] BotReplyRequest request, [FromServices] BotInboxService inbox, CancellationToken ct) =>
+        Ok(await inbox.ReplyAsync(branchId, telefone, request.Texto, AuthorName(), ct));
+
+    /// <summary>A equipe assume a conversa: o bot para de responder (até 12 h, ou até o cliente mandar "menu").</summary>
+    [HttpPost("{branchId:guid}/bot/conversas/{telefone}/assumir")]
+    public async Task<IActionResult> TakeOverConversation(Guid branchId, string telefone, [FromServices] BotInboxService inbox, CancellationToken ct) =>
+        Ok(new { estado = await inbox.SetStateAsync(branchId, telefone, human: true, ct) });
+
+    /// <summary>Devolve a conversa ao bot: a próxima mensagem do cliente recomeça o atendimento automático.</summary>
+    [HttpPost("{branchId:guid}/bot/conversas/{telefone}/devolver")]
+    public async Task<IActionResult> ReleaseConversation(Guid branchId, string telefone, [FromServices] BotInboxService inbox, CancellationToken ct) =>
+        Ok(new { estado = await inbox.SetStateAsync(branchId, telefone, human: false, ct) });
+
+    /// <summary>A equipe abriu a conversa: zera as não lidas.</summary>
+    [HttpPost("{branchId:guid}/bot/conversas/{telefone}/lida")]
+    public async Task<IActionResult> SeenConversation(Guid branchId, string telefone, [FromServices] BotInboxService inbox, CancellationToken ct)
     {
-        var phones = AgendaFormat.PhoneVariants(telefone);
-        string state = BotStates.Idle;
-        foreach (var p in phones)
-        {
-            if (await store.GetSessionAsync(branchId, p, ct) is { } s)
-            {
-                state = s.State;
-                break;
-            }
-        }
-        var messages = await store.ListMessagesAsync(branchId, phones, limite, ct);
-        return Ok(new BotConversationDto(state, messages
-            .Select(m => new BotLogDto(m.Phone, m.Direction, m.Kind, m.Body, m.WamId,
-                DateTime.SpecifyKind(m.CreatedAt, DateTimeKind.Utc).ToString("O", System.Globalization.CultureInfo.InvariantCulture)))
-            .ToList()));
+        await inbox.MarkSeenAsync(branchId, telefone, ct);
+        return NoContent();
     }
+
+    /// <summary>Nome de quem está logado, para assinar a resposta na conversa.</summary>
+    private string AuthorName() =>
+        User.FindFirst("name")?.Value
+        ?? User.FindFirst(System.Security.Claims.ClaimTypes.Name)?.Value
+        ?? User.FindFirst("unique_name")?.Value
+        ?? User.Identity?.Name
+        ?? "Equipe";
 
     /// <summary>O template do lembrete a cadastrar no WhatsApp Manager, com o texto atual de Ajustes.</summary>
     [HttpGet("{branchId:guid}/bot/modelo-lembrete")]

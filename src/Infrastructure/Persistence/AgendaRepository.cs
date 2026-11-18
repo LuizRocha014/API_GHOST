@@ -21,7 +21,7 @@ public sealed class AgendaRepository(SqlSession session) : IAgendaRepository
         Id, BranchId, BookingId, Type, ScheduledFor, Status, Attempts, WamId, Answer, AnsweredAt, Error, CreatedAt, UpdatedAt, Active
         """;
 
-    internal const string ClientColumns = "Id, BranchId, Phone, Name, ReminderOptIn, OptInAt, Vip, Notes, CreatedAt, UpdatedAt, Active";
+    internal const string ClientColumns = "Id, BranchId, Phone, Name, ReminderOptIn, OptInAt, Vip, Notes, BotBlocked, CreatedAt, UpdatedAt, Active";
 
     internal const string VehicleColumns = "Id, BranchId, ClientId, Vehicle, Plate, VehicleType, Color, CreatedAt, UpdatedAt, Active";
 
@@ -481,11 +481,11 @@ internal sealed class AgendaTransaction(SqlConnection conn, DbTransaction tx, Gu
     {
         const string sql = """
             UPDATE AgendaClients SET Phone = @Phone, Name = @Name, ReminderOptIn = @ReminderOptIn, OptInAt = @OptInAt,
-                   Vip = @Vip, Notes = @Notes, UpdatedAt = @UpdatedAt, Active = 1
+                   Vip = @Vip, Notes = @Notes, BotBlocked = @BotBlocked, UpdatedAt = @UpdatedAt, Active = 1
              WHERE Id = @Id;
             IF @@ROWCOUNT = 0
-                INSERT INTO AgendaClients (Id, BranchId, Phone, Name, ReminderOptIn, OptInAt, Vip, Notes, CreatedAt, UpdatedAt, Active)
-                VALUES (@Id, @BranchId, @Phone, @Name, @ReminderOptIn, @OptInAt, @Vip, @Notes, @CreatedAt, @UpdatedAt, 1);
+                INSERT INTO AgendaClients (Id, BranchId, Phone, Name, ReminderOptIn, OptInAt, Vip, Notes, BotBlocked, CreatedAt, UpdatedAt, Active)
+                VALUES (@Id, @BranchId, @Phone, @Name, @ReminderOptIn, @OptInAt, @Vip, @Notes, @BotBlocked, @CreatedAt, @UpdatedAt, 1);
             """;
         return conn.ExecuteAsync(Cmd(sql, c));
     }

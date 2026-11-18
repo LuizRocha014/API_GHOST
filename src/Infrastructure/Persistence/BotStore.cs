@@ -76,15 +76,14 @@ public sealed class BotStore(IConfiguration configuration) : IBotStore
         }, cancellationToken: ct));
     }
 
-    public async Task LogMessageAsync(Guid branchId, string phone, string direction, string kind, string body, string? wamId, CancellationToken ct = default)
+    public async Task LogMessageAsync(
+        Guid branchId, string phone, string direction, string kind, string body, string? wamId, BotLogExtra? extra = null, CancellationToken ct = default)
     {
         const string sql = """
-            INSERT INTO BotMessages (Id, BranchId, Phone, Direction, Kind, Body, WamId, CreatedAt, UpdatedAt, Active)
-            VALUES (@Id, @BranchId, @Phone, @Direction, @Kind, @Body, @WamId, @Now, @Now, 1)
+            INSERT INTO BotMessages (Id, BranchId, Phone, Direction, Kind, Body, WamId, Meta, Author, CreatedAt, UpdatedAt, Active)
+            VALUES (@Id, @BranchId, @Phone, @Direction, @Kind, @Body, @WamId, @Meta, @Author, @Now, @Now, 1)
             """;
-        var now = DateTime.UtcNow;
-        await using var conn = await OpenAsync(ct);
-        await conn.ExecuteAsync(new CommandDefinition(sql, new
+        var args = new DynamicParameters(new
         {
             Id = Guid.NewGuid(),
             BranchId = branchId,
@@ -93,15 +92,20 @@ public sealed class BotStore(IConfiguration configuration) : IBotStore
             Kind = Cut(kind, 16),
             Body = Cut(body, MaxBody),
             WamId = wamId is null ? null : Cut(wamId, 128),
-            Now = now,
-        }, cancellationToken: ct));
+            Meta = extra?.Meta,
+            Author = extra?.Author is null ? null : Cut(extra.Author, 80),
+        });
+        // datetime2: o Dapper mandaria datetime (3 ms) e a resposta do bot empataria com a mensagem do cliente na ordem.
+        args.Add("Now", DateTime.UtcNow, System.Data.DbType.DateTime2);
+        await using var conn = await OpenAsync(ct);
+        await conn.ExecuteAsync(new CommandDefinition(sql, args, cancellationToken: ct));
     }
 
     public async Task<IReadOnlyList<BotLogEntry>> ListMessagesAsync(Guid branchId, IReadOnlyList<string> phones, int limit, CancellationToken ct = default)
     {
         const string sql = """
-            SELECT Phone, Direction, Kind, Body, WamId, CreatedAt FROM (
-                SELECT TOP (@Limit) Phone, Direction, Kind, Body, WamId, CreatedAt
+            SELECT Phone, Direction, Kind, Body, WamId, CreatedAt, Meta, Author FROM (
+                SELECT TOP (@Limit) Phone, Direction, Kind, Body, WamId, CreatedAt, Meta, Author
                 FROM BotMessages
                 WHERE BranchId = @BranchId AND Phone IN @Phones AND Active = 1
                 ORDER BY CreatedAt DESC
@@ -112,6 +116,57 @@ public sealed class BotStore(IConfiguration configuration) : IBotStore
         var rows = await conn.QueryAsync<BotLogEntry>(new CommandDefinition(sql,
             new { BranchId = branchId, Phones = phones, Limit = Math.Clamp(limit, 1, 500) }, cancellationToken: ct));
         return rows.ToList();
+    }
+
+    public async Task<IReadOnlyList<BotConversationRow>> ListConversationsAsync(Guid branchId, DateTime sinceUtc, int limit, CancellationToken ct = default)
+    {
+        const string sql = """
+            WITH conv AS (
+                SELECT TOP (@Limit) Phone, MAX(CreatedAt) AS LastAt
+                  FROM BotMessages
+                 WHERE BranchId = @BranchId AND Active = 1 AND CreatedAt >= @Since
+                 GROUP BY Phone
+                 ORDER BY MAX(CreatedAt) DESC
+            )
+            SELECT c.Phone, c.LastAt,
+                   l.Direction AS LastDirection, l.Kind AS LastKind, l.Body AS LastBody,
+                   (SELECT MAX(i.CreatedAt) FROM BotMessages i
+                     WHERE i.BranchId = @BranchId AND i.Phone = c.Phone AND i.Direction = 'in' AND i.Active = 1) AS LastInAt,
+                   (SELECT COUNT(1) FROM BotMessages u
+                     WHERE u.BranchId = @BranchId AND u.Phone = c.Phone AND u.Direction = 'in' AND u.Active = 1
+                       AND u.CreatedAt > ISNULL(s.SeenAt, '19000101')) AS Unread,
+                   s.State, s.DataJson
+              FROM conv c
+             OUTER APPLY (SELECT TOP 1 Direction, Kind, Body FROM BotMessages m
+                           WHERE m.BranchId = @BranchId AND m.Phone = c.Phone AND m.Active = 1
+                           ORDER BY m.CreatedAt DESC) l
+              LEFT JOIN BotSessions s ON s.BranchId = @BranchId AND s.Phone = c.Phone AND s.Active = 1
+             ORDER BY c.LastAt DESC
+            """;
+        await using var conn = await OpenAsync(ct);
+        var rows = await conn.QueryAsync<BotConversationRow>(new CommandDefinition(sql,
+            new { BranchId = branchId, Since = sinceUtc, Limit = limit }, cancellationToken: ct));
+        return rows.ToList();
+    }
+
+    public async Task MarkSeenAsync(Guid branchId, string phone, DateTime seenAtUtc, CancellationToken ct = default)
+    {
+        const string sql = "UPDATE BotSessions SET SeenAt = @SeenAt WHERE BranchId = @BranchId AND Phone = @Phone";
+        await using var conn = await OpenAsync(ct);
+        await conn.ExecuteAsync(new CommandDefinition(sql, new { BranchId = branchId, Phone = phone, SeenAt = seenAtUtc }, cancellationToken: ct));
+    }
+
+    public async Task<IReadOnlyList<BotClientName>> ClientNamesAsync(Guid branchId, IReadOnlyList<string> phones, CancellationToken ct = default)
+    {
+        if (phones.Count == 0) return [];
+        const string sql = """
+            SELECT CONVERT(varchar(36), Id) AS Id, Phone, Name FROM AgendaClients
+             WHERE BranchId = @BranchId AND Active = 1 AND Phone IN @Phones
+            """;
+        await using var conn = await OpenAsync(ct);
+        var rows = await conn.QueryAsync<(string Id, string Phone, string Name)>(new CommandDefinition(sql,
+            new { BranchId = branchId, Phones = phones }, cancellationToken: ct));
+        return rows.Select(r => new BotClientName(r.Id.ToLowerInvariant(), r.Phone, r.Name)).ToList();
     }
 
     public async Task<int> PurgeAsync(DateTime processedBeforeUtc, DateTime messagesBeforeUtc, CancellationToken ct = default)

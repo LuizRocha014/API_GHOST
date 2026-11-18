@@ -8,9 +8,33 @@ O bot é uma máquina de estados determinística, sem inteligência artificial: 
 WhatsApp e também aceita o que o cliente digita (o número da opção, o nome do serviço ou o horário, como `10:00` ou `10h`).
 
 ```
-idle → choosingService → choosingVehicleType → choosingDay → choosingSlot → askingVehicle → confirming → idle
+idle → choosingService → (choosingVehicle | choosingVehicleType) → choosingDay → choosingSlot → askingVehicle → confirming → idle
+myBookings → bookingAction → (remarcar: choosingDay… | cancelar, com confirmação)
                                                     (qualquer passo) → withAttendant (a equipe responde)
 ```
+
+O que o cliente consegue fazer sozinho:
+
+- **Agendar**: serviço → veículo → dia → horário → resumo → confirmar. Cliente cadastrado escolhe um dos **carros
+  dele** ("Civic · CAR1A11") e o bot não pergunta tipo, modelo nem placa; a reserva vai ligada ao cliente e ao carro.
+- **Plano de fidelidade**: o resumo mostra "Incluso no seu plano *Ouro* (2º de 4 em novembro)" ou avisa que o plano
+  já usou as vezes do mês e o horário sai pelo preço normal. Quem aplica o plano continua sendo a reserva.
+- **Meus agendamentos**: lista os próximos horários (inclusive os marcados no balcão para o cliente) e, em cada um,
+  **Remarcar** ou **Cancelar horário** (com confirmação), a qualquer momento, respeitando o prazo mínimo
+  (`bot.cancelMinHours`). Também pelo botão do lembrete D-1.
+- **Informações**: endereço, link do mapa, horário de funcionamento (das horas da agenda), preços (dos serviços),
+  formas de pagamento e um recado. Sai com "endereço", "preços", "informações"… ou quando a primeira mensagem já é
+  uma pergunta ("quanto custa a lavagem?"): o bot responde e mostra o menu. Configure em Ajustes → Negócio →
+  Informações para o cliente (`info` da configuração).
+- **Falar com a equipe**: o bot fica calado e a conversa aparece na caixa de entrada do app.
+
+Proteções do agendamento automático (Ajustes → Bot e mensagens; só valem para agendamento novo pelo WhatsApp):
+
+| Ajuste | Padrão | Efeito |
+| --- | --- | --- |
+| `bot.maxUpcoming` | 3 | Com esse número de horários futuros, o bot pede para remarcar ou cancelar um antes de marcar outro. 0 = sem limite. |
+| `bot.noShowLimit` / `bot.noShowDays` | 2 / 180 | Com 2 faltas nos últimos 180 dias, só a equipe marca. 0 = desligado. |
+| Ficha do cliente → "Só agenda com a equipe" | – | O bot não marca para esse cliente (ele ainda vê, remarca e cancela o que tem). |
 
 ## Como funciona por dentro
 
@@ -93,16 +117,35 @@ curl -X POST http://localhost:5000/api/agenda/<filial>/bot/mensagens \
 
 Para tocar numa opção, mande `opcaoId` (ex.: `svc:s1`, `slot:540`, `confirm:ok`, `conf:<id do agendamento>`).
 
-- `GET api/agenda/{filial}/bot/conversas/{telefone}`: passo atual e as últimas mensagens da conversa.
 - `GET api/agenda/{filial}/bot/modelo-lembrete`: o texto do lembrete no formato da Meta (`{{1}}`, `{{2}}`…), a ordem
   das variáveis e os botões, para cadastrar o template.
 
-`python infra/e2e/bot_e2e.py` testa tudo isso contra a API e o banco de verdade: o caminho feliz, opção digitada,
-mensagem repetida, atendente, cancelar no meio, horário ocupado, as respostas do lembrete (dono, nono dígito, prazo
-mínimo, remarcar), parar/voltar lembretes, áudio, os limites da Cloud API, e o webhook (verificação, assinatura, id
-repetido, número sem filial, status de entrega e botão do template). Precisa de `AppSecret`, `VerifyToken` e
-`Numbers:0` nos user-secrets (a filial do `Numbers:0` deve ser a primeira da lista). Devolve os ajustes originais e apaga
-o que cria.
+### Caixa de entrada (atendimento humano)
+
+No app, aba **WhatsApp → Conversas** (só conectado à API). Rotas:
+
+| Rota | O que faz |
+| --- | --- |
+| `GET bot/conversas` | Conversas dos últimos 30 dias: nome (do cadastro ou do perfil), passo do bot, `precisaAtendente`, `naoLidas`, `janelaAberta` e a última mensagem. |
+| `GET bot/conversas/{telefone}` | A conversa inteira: cliente, bot (com as opções que ele mostrou) e equipe (com o autor). |
+| `POST bot/conversas/{telefone}/responder` `{ "texto" }` | A equipe responde pelo WhatsApp. Só com a **janela de 24 h** aberta (o cliente escreveu nas últimas 24 h); fora dela, 409. A conversa passa para a equipe. |
+| `POST bot/conversas/{telefone}/assumir` | A equipe assume: o bot para de responder (por até 12 h, ou até o cliente mandar "menu"). |
+| `POST bot/conversas/{telefone}/devolver` | Devolve ao bot: a próxima mensagem do cliente recomeça o atendimento automático. |
+| `POST bot/conversas/{telefone}/lida` | Zera as não lidas. |
+
+A resposta da equipe é gravada em `BotMessages` com `Direction = agent` e o nome de quem está logado (`Author`).
+O app atualiza a lista a cada 15 s e a conversa aberta a cada 4 s; o selo da aba WhatsApp conta quem pediu atendente.
+
+### Teste ponta a ponta
+
+`python infra/e2e/bot_e2e.py` testa tudo isso contra a API e o banco de verdade (111 verificações): o caminho feliz,
+opção digitada, mensagem repetida, atendente, cancelar no meio, horário ocupado, as respostas do lembrete (dono, nono
+dígito, prazo mínimo, remarcar), parar/voltar lembretes, áudio, os limites da Cloud API, o webhook (verificação,
+assinatura, id repetido, número sem filial, status de entrega e botão do template) e a fase 2: informações, carros
+cadastrados, plano no resumo (1º e 2º de 2, esgotado), limite de horários, meus agendamentos (cancelar com
+confirmação, remarcar, agendamento do balcão sem telefone), cliente bloqueado, faltas e a caixa de entrada (não lidas,
+responder, bot calado, devolver, assumir, janela fechada). Precisa de `AppSecret`, `VerifyToken` e `Numbers:0` nos
+user-secrets (a filial do `Numbers:0` deve ser a primeira da lista). Devolve os ajustes originais e apaga o que cria.
 
 ## Ligar na Meta (passo a passo)
 
@@ -155,6 +198,8 @@ com IIS ou Nginx, um container). Lembre de configurar as variáveis de ambiente 
   mensagem se perde (a Meta não reenvia). Uma fila persistente resolve.
 - Um único worker processa as mensagens em ordem; para muitas estéticas no mesmo servidor, processar por telefone em
   paralelo.
-- A equipe ainda não vê nem responde a conversa pelo app (as mensagens ficam em `BotMessages` e na rota
-  `bot/conversas`). Quando o cliente pede atendente, alguém precisa responder pelo WhatsApp Business.
+- A caixa de entrada é atualizada por consulta periódica (15 s / 4 s); aviso instantâneo (SignalR ou notificação no
+  celular) fica para depois. Fotos e áudios do cliente aparecem só como "[image]"/"[audio]".
+- Nos dados de exemplo do app (sem API) não há caixa de entrada: o simulador usa o bot local em Dart, que não tem as
+  funções da fase 2.
 - Falhas de envio por limite de taxa da Meta não são reenviadas automaticamente (o lembrete tenta de novo até 3 vezes).

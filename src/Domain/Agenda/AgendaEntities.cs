@@ -136,6 +136,9 @@ public sealed class AgendaClient : Core
     public DateTime? OptInAt { get; set; }
     public bool Vip { get; set; }
     public string Notes { get; set; } = string.Empty;
+
+    /// <summary>O bot não agenda para este número: manda falar com a equipe (abuso, inadimplência…).</summary>
+    public bool BotBlocked { get; set; }
 }
 
 /// <summary>Carro de um cliente. A placa identifica o carro; sem placa, vale o modelo.</summary>

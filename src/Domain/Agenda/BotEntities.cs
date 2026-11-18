@@ -14,6 +14,9 @@ public sealed class BotSessionRecord : Core
     public string Phone { get; set; } = string.Empty;
     public string State { get; set; } = "idle";
     public string DataJson { get; set; } = "{}";
+
+    /// <summary>Quando a equipe abriu a conversa pela última vez (UTC): o que chegou depois conta como não lido.</summary>
+    public DateTime? SeenAt { get; set; }
 }
 
 /// <summary>Id de mensagem do WhatsApp já processada: a Meta reenvia o webhook e o bot não pode agendar duas vezes.</summary>
@@ -29,7 +32,7 @@ public sealed class BotMessage : Core
     public Guid BranchId { get; set; }
     public string Phone { get; set; } = string.Empty;
 
-    /// <summary>"in" (cliente → bot) ou "out" (bot → cliente).</summary>
+    /// <summary>"in" (cliente → bot), "out" (bot → cliente) ou "agent" (equipe → cliente, pela caixa de entrada).</summary>
     public string Direction { get; set; } = "in";
 
     /// <summary>text, list, buttons, template, interactive, ou o tipo recebido (audio, image…).</summary>
@@ -38,4 +41,10 @@ public sealed class BotMessage : Core
 
     /// <summary>Id da mensagem no WhatsApp (entrada: message.id; saída: wamid devolvido no envio).</summary>
     public string? WamId { get; set; }
+
+    /// <summary>Saída com opções (lista, botões, template): botão e opções em JSON, para a caixa de entrada mostrar.</summary>
+    public string? Meta { get; set; }
+
+    /// <summary>Quem da equipe respondeu (Direction = "agent").</summary>
+    public string? Author { get; set; }
 }

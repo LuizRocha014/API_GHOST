@@ -90,7 +90,8 @@ public sealed record ClientDto(
     IReadOnlyList<ClientVehicleDto> Vehicles,
     ClientStatsDto Stats,
     IReadOnlyList<string> PlanNames,
-    int PendingCharges);
+    int PendingCharges,
+    bool BotBlocked = false);
 
 public sealed record ClientVehicleDto(string Id, string Vehicle, string Plate, string VehicleType, string Color);
 
@@ -108,6 +109,9 @@ public sealed class ClientFormRequest
     public bool ReminderOptIn { get; set; }
     public bool Vip { get; set; }
     public string? Notes { get; set; }
+
+    /// <summary>O bot não agenda para este cliente (manda falar com a equipe).</summary>
+    public bool BotBlocked { get; set; }
     public List<ClientVehicleRequest>? Vehicles { get; set; }
 }
 

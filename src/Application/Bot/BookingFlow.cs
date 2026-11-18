@@ -6,27 +6,51 @@ using Microsoft.Extensions.Logging;
 namespace Application.Bot;
 
 /// <summary>
-/// Agendamento pelo WhatsApp: máquina de estados determinística, sem LLM (porta do BookingFlow do app).
+/// Agendamento pelo WhatsApp: máquina de estados determinística, sem LLM.
 ///
-///     idle → choosingService → choosingVehicleType → choosingDay → choosingSlot
+///     idle → choosingService → (choosingVehicle | choosingVehicleType) → choosingDay → choosingSlot
 ///          → askingVehicle → confirming → (reserva) → idle
+///     myBookings → bookingAction → (remarcar: choosingDay… | cancelar)
 ///
 /// Regras transversais: sessão expira depois de Bot.SessionTimeoutMin parada; entrada inválida repete a pergunta
-/// e, depois de N tentativas, oferece atendente; comandos globais (menu, cancelar, atendente, parar/quero lembretes);
-/// mensagem repetida da Meta é ignorada pelo id; respostas do lembrete (conf/rem/canc) valem em qualquer passo e
-/// conferem se o número é o dono do agendamento. As regras de agenda são as do <see cref="IAgendaService"/>.
+/// e, depois de N tentativas, oferece atendente; comandos globais (menu, cancelar, atendente, meus agendamentos,
+/// informações, parar/quero lembretes); mensagem repetida da Meta é ignorada pelo id; respostas do lembrete e de
+/// "meus agendamentos" (conf/rem/canc/cask) valem em qualquer passo e conferem se o número é o dono do agendamento.
+/// Proteções (Bot.MaxUpcoming, Bot.NoShowLimit, cliente bloqueado) valem para agendamento novo.
+/// As regras de agenda e de plano são as do <see cref="IAgendaService"/>.
 /// </summary>
 public sealed partial class BookingFlow(IAgendaService agenda, IBotStore store, IAgendaClock clock, ILogger<BookingFlow> logger)
 {
     private const int SlotsPerPage = 8;
+    private const int MaxListedBookings = 9;
     private static readonly TimeSpan AttendantTimeout = TimeSpan.FromHours(12);
 
     private static readonly HashSet<string> CmdMenu = ["menu", "inicio", "comecar", "recomecar"];
     private static readonly HashSet<string> CmdCancel = ["cancelar", "sair", "parar agendamento"];
-    private static readonly HashSet<string> CmdAttendant = ["atendente", "humano", "falar com atendente", "falar com alguem"];
+    private static readonly HashSet<string> CmdAttendant = ["atendente", "humano", "falar com atendente", "falar com alguem", "falar com a equipe"];
     private static readonly HashSet<string> CmdOptOut = ["parar lembretes", "nao quero lembretes", "parar lembrete"];
     private static readonly HashSet<string> CmdOptIn = ["quero lembretes", "quero lembrete", "voltar lembretes"];
+    private static readonly HashSet<string> CmdMyBookings =
+    [
+        "meus agendamentos", "meus horarios", "meu agendamento", "meu horario", "agendamentos", "horarios marcados",
+        "remarcar", "desmarcar", "cancelar horario", "cancelar agendamento", "cancelar meu horario", "cancelar meu agendamento",
+        "remarcar horario", "remarcar agendamento", "remarcar meu horario",
+    ];
+    private static readonly HashSet<string> CmdInfo =
+    [
+        "informacoes", "informacao", "info", "endereco", "localizacao", "onde fica", "horario de funcionamento", "funcionamento",
+        "precos", "preco", "valores", "tabela", "tabela de precos", "pagamento", "formas de pagamento",
+    ];
+
+    /// <summary>Primeira mensagem perguntando preço, endereço ou horário: responde com as informações antes do menu.</summary>
+    private static readonly string[] InfoKeywords =
+    [
+        "quanto custa", "quanto fica", "quanto sai", "qual o valor", "qual valor", "preco", "valores", "endereco", "onde fica",
+        "localizacao", "que horas abre", "que horas fecha", "horario de funcionamento", "abre hoje", "aberto hoje",
+        "forma de pagamento", "formas de pagamento", "aceita pix", "aceita cartao",
+    ];
     private static readonly HashSet<string> Yes = ["sim", "ok", "confirmar", "confirmo", "pode", "pode confirmar", "s"];
+    private static readonly HashSet<string> No = ["nao", "n", "voltar", "manter"];
     private static readonly HashSet<string> UnderstoodKinds = ["text", "interactive", "button"];
 
     private sealed class Ctx(Guid branchId, BotSession s, AgendaConfigModel cfg, DateTime now, IncomingMessage msg, IMessagingChannel channel, bool expired, CancellationToken ct)
@@ -40,6 +64,11 @@ public sealed partial class BookingFlow(IAgendaService agenda, IBotStore store, 
         public bool Expired { get; } = expired;
         public CancellationToken Ct { get; } = ct;
         public string Today => BotFormat.Iso(Now.Date);
+
+        // Cache da mensagem: cliente e histórico são lidos uma vez por mensagem.
+        public bool ClientLoaded { get; set; }
+        public ClientDto? Client { get; set; }
+        public IReadOnlyList<BookingDto>? History { get; set; }
     }
 
     /// <summary>Processa uma mensagem do cliente e responde pelo <paramref name="channel"/>.</summary>
@@ -52,7 +81,7 @@ public sealed partial class BookingFlow(IAgendaService agenda, IBotStore store, 
         }
 
         var now = clock.NowLocal;
-        await store.LogMessageAsync(branchId, msg.Phone, "in", msg.Kind, DescribeIncoming(msg), msg.Id, ct);
+        await store.LogMessageAsync(branchId, msg.Phone, "in", msg.Kind, DescribeIncoming(msg), msg.Id, null, ct);
         var s = await store.GetSessionAsync(branchId, msg.Phone, ct) ?? new BotSession { Phone = msg.Phone, UpdatedAt = now };
         var before = s.State;
         try
@@ -94,28 +123,44 @@ public sealed partial class BookingFlow(IAgendaService agenda, IBotStore store, 
     private async Task RouteAsync(Ctx ctx)
     {
         var s = ctx.S;
-        var sel = ctx.Msg.SelectionId;
-
-        var reminder = sel is null ? null : ReminderRegex().Match(sel);
-        if (reminder is { Success: true }) { await OnReminderReplyAsync(ctx, reminder.Groups[1].Value, reminder.Groups[2].Value); return; }
-
         var cmd = BotFormat.Normalize(ctx.Msg.Text);
-        if (sel == "nav:menu" || CmdMenu.Contains(cmd)) { s.Reset(); await AskServiceAsync(ctx); return; }
-        if (sel == "nav:attendant" || CmdAttendant.Contains(cmd)) { await ToAttendantAsync(ctx); return; }
+
+        // Opção tocada ou digitada que vale em qualquer passo.
+        var picked = ctx.Msg.SelectionId ?? (s.Options.Count > 0 ? Selected(ctx) : null);
+        var reminder = picked is null ? null : ReminderRegex().Match(picked);
+        if (reminder is { Success: true }) { await OnBookingReplyAsync(ctx, reminder.Groups[1].Value, reminder.Groups[2].Value); return; }
+
+        if (picked == "nav:menu" || CmdMenu.Contains(cmd)) { s.Reset(); await AskServiceAsync(ctx); return; }
+        if (picked == "nav:attendant" || CmdAttendant.Contains(cmd)) { await ToAttendantAsync(ctx); return; }
+        if (picked == "nav:my" || CmdMyBookings.Contains(cmd)) { await ShowMyBookingsAsync(ctx); return; }
+        if (picked == "nav:info" || CmdInfo.Contains(cmd)) { await ShowInfoAsync(ctx); return; }
         if (CmdCancel.Contains(cmd)) { await CancelFlowAsync(ctx); return; }
         if (CmdOptOut.Contains(cmd)) { await SetReminderOptInAsync(ctx, false); return; }
         if (CmdOptIn.Contains(cmd)) { await SetReminderOptInAsync(ctx, true); return; }
 
         switch (s.State)
         {
-            case BotStates.WithAttendant: return; // a equipe responde manualmente
+            case BotStates.WithAttendant: return; // a equipe responde pela caixa de entrada
             case BotStates.ChoosingService: await OnServiceAsync(ctx); return;
+            case BotStates.ChoosingVehicle: await OnVehicleChoiceAsync(ctx); return;
             case BotStates.ChoosingVehicleType: await OnVehicleTypeAsync(ctx); return;
             case BotStates.ChoosingDay: await OnDayAsync(ctx); return;
             case BotStates.ChoosingSlot: await OnSlotAsync(ctx); return;
             case BotStates.AskingVehicle: await OnVehicleAsync(ctx); return;
             case BotStates.Confirming: await OnConfirmAsync(ctx); return;
-            default: await AskServiceAsync(ctx); return;
+            case BotStates.MyBookings: await OnMyBookingsAsync(ctx); return;
+            case BotStates.BookingAction: await OnBookingActionAsync(ctx); return;
+            default:
+                // Serviço tocado numa lista antiga (o WhatsApp mantém as listas clicáveis): segue com ele.
+                if (ctx.Msg.SelectionId?.StartsWith("svc:", StringComparison.Ordinal) == true) { await OnServiceAsync(ctx); return; }
+                if (InfoKeywords.Any(k => cmd.Contains(k, StringComparison.Ordinal)))
+                {
+                    await SendInfoAsync(ctx);
+                    await AskServiceAsync(ctx, greet: false);
+                    return;
+                }
+                await AskServiceAsync(ctx);
+                return;
         }
     }
 
@@ -143,12 +188,18 @@ public sealed partial class BookingFlow(IAgendaService agenda, IBotStore store, 
         return null;
     }
 
-    /* ---------- Passos ---------- */
+    /* ---------- Novo agendamento ---------- */
 
     private async Task AskServiceAsync(Ctx ctx, bool greet = true)
     {
         var s = ctx.S;
-        var services = ctx.Cfg.Services.Where(x => x.Active).Take(CloudLimits.ListRows).ToList();
+        var client = await ClientAsync(ctx);
+        var more = new List<BotOption>();
+        if (client is { Stats.Upcoming: > 0 }) more.Add(new BotOption("nav:my", "Meus agendamentos", "ver, remarcar ou cancelar"));
+        more.Add(new BotOption("nav:info", "Endereço e horários", "como chegar, horário de funcionamento e preços"));
+        more.Add(new BotOption("nav:attendant", "Falar com a equipe", "atendimento com uma pessoa"));
+
+        var services = ctx.Cfg.Services.Where(x => x.Active).Take(CloudLimits.ListRows - more.Count).ToList();
         if (services.Count == 0)
         {
             s.Reset();
@@ -158,12 +209,10 @@ public sealed partial class BookingFlow(IAgendaService agenda, IBotStore store, 
         var body = "Qual serviço você quer agendar?";
         if (greet)
         {
-            var client = await agenda.GetClientAsync(ctx.BranchId, s.Phone, ctx.Ct);
-            var name = BotFormat.FirstName(s.ProfileName ?? client?.Name);
             var expired = ctx.Expired ? "Sua conversa anterior expirou, vamos recomeçar. " : string.Empty;
             var greeting = BotFormat.Fill(ctx.Cfg.Texts.GreetingText, new Dictionary<string, string>
             {
-                ["nome"] = name.Length == 0 ? "cliente" : name,
+                ["nome"] = Name(ctx),
                 ["estetica"] = ctx.Cfg.BusinessName,
             });
             body = $"{expired}{greeting}\n\n{body}";
@@ -172,10 +221,12 @@ public sealed partial class BookingFlow(IAgendaService agenda, IBotStore store, 
         await ListAsync(ctx, new ListMessage(
             body,
             "Ver serviços",
-            [new BotListSection("Serviços", services
-                .Select(sv => new BotOption($"svc:{sv.Id}", BotFormat.Truncate(sv.Name, 24), BotFormat.Truncate(DescribeService(sv, ctx.Cfg), 72)))
-                .ToList())],
-            Footer: "Digite atendente para falar com a equipe"));
+            [
+                new BotListSection("Serviços", services
+                    .Select(sv => new BotOption($"svc:{sv.Id}", BotFormat.Truncate(sv.Name, 24), BotFormat.Truncate(DescribeService(sv, ctx.Cfg), 72)))
+                    .ToList()),
+                new BotListSection("Mais opções", more),
+            ]));
     }
 
     private async Task OnServiceAsync(Ctx ctx)
@@ -183,9 +234,51 @@ public sealed partial class BookingFlow(IAgendaService agenda, IBotStore store, 
         var id = Selected(ctx);
         var svc = id is not null && id.StartsWith("svc:", StringComparison.Ordinal) ? ctx.Cfg.ServiceById(id[4..]) : null;
         if (svc is null || !svc.Active) { await InvalidAsync(ctx); return; }
+        if (await RefuseNewBookingAsync(ctx)) return;
         ctx.S.ServiceId = svc.Id;
         ctx.S.InvalidCount = 0;
+        if (await AskRegisteredVehicleAsync(ctx)) return;
         await AskVehicleTypeAsync(ctx);
+    }
+
+    /// <summary>Cliente com carros cadastrados escolhe um deles (tipo, modelo e placa já vêm do cadastro).</summary>
+    private async Task<bool> AskRegisteredVehicleAsync(Ctx ctx)
+    {
+        var svc = Service(ctx);
+        var client = await ClientAsync(ctx);
+        if (svc is null || client is null) return false;
+        var vehicles = client.Vehicles.Where(v => ctx.Cfg.VehicleEnabled(v.VehicleType)).Take(CloudLimits.ListRows - 1).ToList();
+        if (vehicles.Count == 0) return false;
+
+        var rows = vehicles.Select(v =>
+        {
+            var price = svc.PriceFor(v.VehicleType);
+            var desc = $"{ctx.Cfg.VehicleLabel(v.VehicleType)} · {BotFormat.Duration(svc.DurationFor(v.VehicleType))}" +
+                       (ctx.Cfg.Bot.ShowPrices && price is not null ? $" · {BotFormat.Money(price)}" : string.Empty);
+            return new BotOption($"veh:{v.Id}", BotFormat.Truncate(VehicleTitle(v.Vehicle, v.Plate), 24), BotFormat.Truncate(desc, 72));
+        }).ToList();
+        rows.Add(new BotOption("veh:other", "Outro veículo", "informar outro carro ou moto"));
+        ctx.S.State = BotStates.ChoosingVehicle;
+        await ListAsync(ctx, new ListMessage($"*{svc.Name}* ✨\n\nPara qual veículo?", "Ver veículos", [new BotListSection("Seus veículos", rows)]));
+        return true;
+    }
+
+    private async Task OnVehicleChoiceAsync(Ctx ctx)
+    {
+        var s = ctx.S;
+        var id = Selected(ctx);
+        if (id == "veh:other") { s.InvalidCount = 0; await AskVehicleTypeAsync(ctx); return; }
+        var client = await ClientAsync(ctx);
+        var v = id is not null && id.StartsWith("veh:", StringComparison.Ordinal)
+            ? client?.Vehicles.FirstOrDefault(x => x.Id == id[4..] && ctx.Cfg.VehicleEnabled(x.VehicleType))
+            : null;
+        if (v is null) { await InvalidAsync(ctx); return; }
+        s.VehicleId = v.Id;
+        s.VehicleType = v.VehicleType;
+        s.Vehicle = v.Vehicle;
+        s.Plate = v.Plate;
+        s.InvalidCount = 0;
+        await AskDayAsync(ctx);
     }
 
     private async Task AskVehicleTypeAsync(Ctx ctx)
@@ -223,6 +316,7 @@ public sealed partial class BookingFlow(IAgendaService agenda, IBotStore store, 
             : null;
         if (vt is null || !ctx.Cfg.VehicleEnabled(vt)) { await InvalidAsync(ctx); return; }
         ctx.S.VehicleType = vt;
+        ctx.S.VehicleId = null;
         ctx.S.InvalidCount = 0;
         await AskDayAsync(ctx);
     }
@@ -264,8 +358,9 @@ public sealed partial class BookingFlow(IAgendaService agenda, IBotStore store, 
                 "Digite *atendente* para a equipe ver um encaixe, ou *menu* para escolher outro serviço.");
             return;
         }
+        var vehicle = s.VehicleId is not null ? VehicleTitle(s.Vehicle, s.Plate) : ctx.Cfg.VehicleLabel(vt);
         await ListAsync(ctx, new ListMessage(
-            $"{intro}*{svc.Name}* · {ctx.Cfg.VehicleLabel(vt)} · {duration}\n\nEscolha o dia:",
+            $"{intro}*{svc.Name}* · {vehicle} · {duration}\n\nEscolha o dia:",
             "Ver dias",
             [new BotListSection("Dias com horário livre", rows)]));
     }
@@ -365,7 +460,7 @@ public sealed partial class BookingFlow(IAgendaService agenda, IBotStore store, 
         s.State = BotStates.Confirming;
         var duration = svc.DurationFor(vt);
         var price = svc.PriceFor(vt);
-        var vehicle = string.Join(" · ", new[] { s.Vehicle, s.Plate }.Where(x => !string.IsNullOrEmpty(x)));
+        var vehicle = VehicleTitle(s.Vehicle, s.Plate);
         var lines = new List<string>
         {
             s.RescheduleOf is not null ? "*Novo horário*" : "*Resumo do agendamento*",
@@ -374,10 +469,38 @@ public sealed partial class BookingFlow(IAgendaService agenda, IBotStore store, 
             $"🕘 {BotFormat.Hm(s.SlotStart.Value)} às {BotFormat.Hm(s.SlotStart.Value + duration)}",
         };
         if (vehicle.Length > 0) lines.Add($"🔖 {vehicle}");
-        if (price is not null && ctx.Cfg.Bot.ShowPrices) lines.Add($"💰 {BotFormat.Money(price)}");
+
+        var plan = await PlanLineAsync(ctx, svc, vt, s.Date);
+        if (plan.Covered) lines.Add(plan.Line!);
+        else
+        {
+            if (price is not null && ctx.Cfg.Bot.ShowPrices) lines.Add($"💰 {BotFormat.Money(price)}");
+            if (plan.Line is not null) lines.Add(plan.Line);
+        }
         await ButtonsAsync(ctx, new ButtonsMessage(
             $"{string.Join("\n", lines)}\n\nPosso confirmar?",
             [new BotOption("confirm:ok", "Confirmar"), new BotOption("confirm:change", "Trocar horário"), new BotOption("confirm:abort", "Cancelar")]));
+    }
+
+    /// <summary>Linha do plano de fidelidade no resumo: incluso (e qual vez do mês) ou já usado no mês.</summary>
+    private async Task<(bool Covered, string? Line)> PlanLineAsync(Ctx ctx, ServiceModel svc, string vt, string date)
+    {
+        var client = await ClientAsync(ctx);
+        if (client is null || !Guid.TryParse(client.Id, out var clientId)) return (false, null);
+        var s = ctx.S;
+        if (s.RescheduleOf is not null)
+        {
+            // A remarcação leva o plano junto quando continua no mesmo mês.
+            var old = await FindBookingAsync(ctx, s.RescheduleOf);
+            if (old?.ClientPlanId is not null && old.Date[..7] == date[..7]) return (true, "💳 Continua incluso no seu plano");
+        }
+        var coverage = await agenda.PlanCoverageAsync(
+            ctx.BranchId, clientId, Guid.TryParse(s.VehicleId, out var vid) ? vid : null, vt, svc.Id, date, ctx.Ct);
+        if (coverage is null) return (false, null);
+        var month = BotFormat.MonthName(date);
+        return coverage.HasRoom
+            ? (true, $"💳 Incluso no seu plano *{coverage.PlanName}* ({coverage.Used + 1}º de {coverage.TimesPerMonth} em {month})")
+            : (false, $"💳 Seu plano *{coverage.PlanName}* já usou as {coverage.TimesPerMonth} vezes de {month}; este sai pelo preço normal.");
     }
 
     private async Task OnConfirmAsync(Ctx ctx)
@@ -401,6 +524,7 @@ public sealed partial class BookingFlow(IAgendaService agenda, IBotStore store, 
         var start = s.SlotStart;
         if (svc is null || vt is null || date is null || start is null) { await AskServiceAsync(ctx); return; }
         var rescheduleOf = s.RescheduleOf;
+        if (rescheduleOf is null && await RefuseNewBookingAsync(ctx)) return;
         try
         {
             BookingDto booking;
@@ -414,25 +538,28 @@ public sealed partial class BookingFlow(IAgendaService agenda, IBotStore store, 
             }
             else
             {
-                var client = await agenda.GetClientAsync(ctx.BranchId, s.Phone, ctx.Ct);
+                var client = await ClientAsync(ctx);
                 var optIn = client?.ReminderOptIn ?? true;
-                var vehicle = s.Vehicle ?? string.Empty;
                 booking = await agenda.CreateBookingAsync(ctx.BranchId, new NewBookingRequest
                 {
                     Date = date,
                     Start = start.Value,
                     ServiceId = svc.Id,
                     VehicleType = vt,
-                    Vehicle = vehicle.Length == 0 ? "Veículo" : vehicle,
+                    // Sem modelo nem placa fica vazio: um nome genérico viraria um "carro" no cadastro do cliente.
+                    Vehicle = s.Vehicle ?? string.Empty,
                     Plate = s.Plate ?? string.Empty,
-                    ClientName = !string.IsNullOrWhiteSpace(s.ProfileName) ? s.ProfileName! : client?.Name is { Length: > 0 } n ? n : "Cliente WhatsApp",
+                    ClientName = ClientName(ctx),
                     Phone = s.Phone,
                     Origin = "whatsapp",
                     ReminderOptIn = optIn,
+                    ClientId = client?.Id,
+                    VehicleId = client is null ? null : s.VehicleId,
                 }, ctx.Ct);
                 if (optIn)
                     tail = "\n\nVocê vai receber um lembrete na véspera para confirmar. Se não quiser lembretes, responda *parar lembretes*.";
             }
+            if (booking.ClientPlanId is not null) tail = "\n💳 Incluso no seu plano." + tail;
             logger.LogInformation("Bot {Phone}: {Action} {BookingId}", s.Phone, rescheduleOf is null ? "agendou" : "remarcou", booking.Id);
             s.Reset();
             if (rescheduleOf is not null)
@@ -451,31 +578,130 @@ public sealed partial class BookingFlow(IAgendaService agenda, IBotStore store, 
         }
     }
 
-    /* ---------- Lembrete D-1 ---------- */
+    /// <summary>
+    /// Proteções do agendamento automático: cliente bloqueado, faltas recentes e limite de horários futuros.
+    /// Verdadeiro = recusou (e já respondeu).
+    /// </summary>
+    private async Task<bool> RefuseNewBookingAsync(Ctx ctx)
+    {
+        var client = await ClientAsync(ctx);
+        if (client is null) return false;
+        var bot = ctx.Cfg.Bot;
+        var upcoming = await UpcomingAsync(ctx);
 
-    private async Task OnReminderReplyAsync(Ctx ctx, string kind, string bookingId)
+        string? refusal = null;
+        if (client.BotBlocked)
+        {
+            refusal = "Para este número, os agendamentos são feitos com a equipe. 🙏";
+        }
+        else if (bot.NoShowLimit > 0)
+        {
+            var since = ctx.Now.Date.AddDays(-Math.Max(1, bot.NoShowDays));
+            var noShows = (await HistoryAsync(ctx)).Count(b => b.Status == "no_show" && BotFormat.ParseDate(b.Date) >= since);
+            if (noShows >= bot.NoShowLimit)
+                refusal = $"Como {(noShows == 1 ? "houve 1 falta recente" : $"houve {noShows} faltas recentes")}, " +
+                          "os próximos horários são marcados com a equipe. 🙏";
+        }
+
+        if (refusal is null && bot.MaxUpcoming > 0 && upcoming.Count >= bot.MaxUpcoming)
+        {
+            logger.LogInformation("Bot {Phone}: limite de {Max} horários futuros", ctx.S.Phone, bot.MaxUpcoming);
+            await ShowMyBookingsAsync(ctx,
+                $"Você já tem {(upcoming.Count == 1 ? "1 horário marcado" : $"{upcoming.Count} horários marcados")} " +
+                $"(o limite por aqui é {bot.MaxUpcoming}). Para marcar outro, remarque ou cancele um deles.\n\n");
+            return true;
+        }
+        if (refusal is null) return false;
+
+        ctx.S.Reset();
+        logger.LogInformation("Bot {Phone}: agendamento recusado ({Reason})", ctx.S.Phone, client.BotBlocked ? "bloqueado" : "faltas");
+        await ButtonsAsync(ctx, new ButtonsMessage(refusal, upcoming.Count > 0
+            ? [new BotOption("nav:attendant", "Falar com a equipe"), new BotOption("nav:my", "Meus agendamentos")]
+            : [new BotOption("nav:attendant", "Falar com a equipe")]));
+        return true;
+    }
+
+    /* ---------- Meus agendamentos ---------- */
+
+    private async Task ShowMyBookingsAsync(Ctx ctx, string intro = "")
     {
         var s = ctx.S;
-        var b = await FindBookingAsync(ctx, bookingId);
-        // Dono: sem esta checagem, um terceiro poderia cancelar o horário de outra pessoa.
-        if (b is null || !SamePhone(b.Phone, ctx.Msg.Phone))
+        var upcoming = await UpcomingAsync(ctx);
+        s.Reset();
+        if (upcoming.Count == 0)
         {
-            await TextAsync(ctx, "Não encontrei esse agendamento no seu número 🤔 Digite *menu* para agendar ou *atendente* para falar com a equipe.");
+            await TextAsync(ctx, $"{intro}Você não tem horários marcados por aqui. 🙂");
+            await AskServiceAsync(ctx, greet: false);
             return;
         }
-        if (b.Status != "scheduled")
+        var rows = upcoming.Take(MaxListedBookings).Select(b =>
         {
-            await TextAsync(ctx,
-                $"Esse agendamento está como *{ctx.Cfg.StatusText(b.Status).ToLowerInvariant()}*, então não há nada a fazer nele. " +
-                "Para marcar outro horário, mande *menu*.");
-            return;
-        }
+            var desc = string.Join(" · ", new[] { b.ServiceName, VehicleTitle(b.Vehicle, b.Plate) }.Where(x => x.Length > 0)) +
+                       (b.ClientPlanId is not null ? " · plano" : string.Empty);
+            return new BotOption($"bk:{b.Id}", $"{BotFormat.DayLabel(b.Date)} · {BotFormat.Hm(b.Start)}", BotFormat.Truncate(desc, 72));
+        }).ToList();
+        rows.Add(new BotOption("nav:menu", "Agendar outro horário", "voltar para a lista de serviços"));
+        s.State = BotStates.MyBookings;
+        var more = upcoming.Count > MaxListedBookings ? $" (mostrando os {MaxListedBookings} primeiros)" : string.Empty;
+        await ListAsync(ctx, new ListMessage(
+            $"{intro}Seus próximos horários{more}. Toque num deles para remarcar ou cancelar:",
+            "Ver horários",
+            [new BotListSection("Meus agendamentos", rows)]));
+    }
+
+    private async Task OnMyBookingsAsync(Ctx ctx)
+    {
+        var id = Selected(ctx);
+        if (id is not null && id.StartsWith("bk:", StringComparison.Ordinal)) { await ShowBookingActionsAsync(ctx, id[3..]); return; }
+        await InvalidAsync(ctx);
+    }
+
+    private async Task ShowBookingActionsAsync(Ctx ctx, string bookingId)
+    {
+        var b = await OwnedScheduledBookingAsync(ctx, bookingId);
+        if (b is null) return;
+        var vehicle = VehicleTitle(b.Vehicle, b.Plate);
+        var lines = new List<string>
+        {
+            $"*{b.ServiceName}*",
+            $"📅 {BotFormat.DayLong(b.Date)}",
+            $"🕘 {BotFormat.Hm(b.Start)} às {BotFormat.Hm(b.End)}",
+        };
+        if (vehicle.Length > 0) lines.Add($"🔖 {vehicle}");
+        if (b.ClientPlanId is not null) lines.Add("💳 Incluso no seu plano");
+        ctx.S.State = BotStates.BookingAction;
+        await ButtonsAsync(ctx, new ButtonsMessage(
+            $"{string.Join("\n", lines)}\n\nO que você quer fazer?",
+            [new BotOption($"rem:{b.Id}", "Remarcar"), new BotOption($"cask:{b.Id}", "Cancelar horário"), new BotOption("nav:my", "Voltar")]));
+    }
+
+    private async Task OnBookingActionAsync(Ctx ctx)
+    {
+        var s = ctx.S;
+        var t = BotFormat.Normalize(ctx.Msg.Text);
+        var id = Yes.Contains(t) && s.Options.Count > 0 ? s.Options[0].Id
+            : No.Contains(t) && s.Options.Any(o => o.Id == "nav:my") ? "nav:my"
+            : Selected(ctx);
+        if (id == "nav:my") { await ShowMyBookingsAsync(ctx); return; }
+        var m = id is null ? null : ReminderRegex().Match(id);
+        if (m is { Success: true }) { await OnBookingReplyAsync(ctx, m.Groups[1].Value, m.Groups[2].Value); return; }
+        await InvalidAsync(ctx);
+    }
+
+    /* ---------- Respostas sobre um agendamento (lembrete D-1 e "meus agendamentos") ---------- */
+
+    private async Task OnBookingReplyAsync(Ctx ctx, string kind, string bookingId)
+    {
+        var s = ctx.S;
+        var b = await OwnedScheduledBookingAsync(ctx, bookingId);
+        if (b is null) return;
         var when = $"{BotFormat.DayLong(b.Date)} às {BotFormat.Hm(b.Start)}";
         var id = Guid.Parse(b.Id);
 
         if (kind == "conf")
         {
             await agenda.RegisterAnswerAsync(ctx.BranchId, id, new AnswerRequest { Resposta = "confirmed", Em = Local(ctx.Now) }, ctx.Ct);
+            s.Reset();
             var values = BotFormat.BookingValues(b, ctx.Cfg.BusinessName, ctx.Cfg.BoxName(b.BoxId));
             await TextAsync(ctx, BotFormat.Fill(ctx.Cfg.Texts.ConfirmedText, values));
             return;
@@ -486,10 +712,20 @@ public sealed partial class BookingFlow(IAgendaService agenda, IBotStore store, 
         var startsAt = BotFormat.ParseDate(b.Date).AddMinutes(b.Start);
         if (limit > 0 && startsAt - ctx.Now < TimeSpan.FromHours(limit))
         {
+            s.Reset();
             await ButtonsAsync(ctx, new ButtonsMessage(
-                $"Faltam menos de {limit} h para o seu horário ({when}), então {(kind == "canc" ? "o cancelamento" : "a remarcação")} " +
+                $"Faltam menos de {limit} h para o seu horário ({when}), então {(kind == "rem" ? "a remarcação" : "o cancelamento")} " +
                 "precisa ser feito com a equipe. 🙏",
                 [new BotOption("nav:attendant", "Falar com atendente")]));
+            return;
+        }
+
+        if (kind == "cask")
+        {
+            s.State = BotStates.BookingAction;
+            await ButtonsAsync(ctx, new ButtonsMessage(
+                $"Cancelar o horário de *{b.ServiceName}* em {when}?",
+                [new BotOption($"canc:{b.Id}", "Sim, cancelar"), new BotOption("nav:my", "Não, manter")]));
             return;
         }
 
@@ -511,8 +747,73 @@ public sealed partial class BookingFlow(IAgendaService agenda, IBotStore store, 
         s.VehicleType = b.VehicleType;
         s.Vehicle = b.Vehicle;
         s.Plate = b.Plate;
+        s.VehicleId = b.VehicleId;
         s.RescheduleOf = b.Id;
         await AskDayAsync(ctx, $"Sem problema! Seu horário atual ({when}) continua reservado até você escolher o novo.\n\n");
+    }
+
+    /// <summary>
+    /// Agendamento do número e ainda marcado; senão responde o motivo e devolve nulo. Dono = mesmo telefone (com ou
+    /// sem o nono dígito) ou agendamento do cliente cadastrado com este telefone. Sem essa checagem, um terceiro
+    /// poderia cancelar o horário de outra pessoa.
+    /// </summary>
+    private async Task<BookingDto?> OwnedScheduledBookingAsync(Ctx ctx, string bookingId)
+    {
+        var b = await FindBookingAsync(ctx, bookingId);
+        var client = b is null ? null : await ClientAsync(ctx);
+        var owner = b is not null && (SamePhone(b.Phone, ctx.Msg.Phone) || (client is not null && b.ClientId == client.Id));
+        if (b is null || !owner)
+        {
+            ctx.S.Reset();
+            await TextAsync(ctx, "Não encontrei esse agendamento no seu número 🤔 Digite *menu* para agendar ou *atendente* para falar com a equipe.");
+            return null;
+        }
+        if (b.Status != "scheduled")
+        {
+            ctx.S.Reset();
+            await TextAsync(ctx,
+                $"Esse agendamento está como *{ctx.Cfg.StatusText(b.Status).ToLowerInvariant()}*, então não há nada a fazer nele. " +
+                "Para marcar outro horário, mande *menu*.");
+            return null;
+        }
+        return b;
+    }
+
+    /* ---------- Informações ---------- */
+
+    private async Task ShowInfoAsync(Ctx ctx)
+    {
+        await SendInfoAsync(ctx);
+        ctx.S.Reset();
+        await ButtonsAsync(ctx, new ButtonsMessage(
+            "Quer agendar um horário?",
+            [new BotOption("nav:menu", "Agendar horário"), new BotOption("nav:attendant", "Falar com a equipe")]));
+    }
+
+    /// <summary>Endereço, mapa, horário de funcionamento, preços (se o bot mostra preços), pagamento e recado.</summary>
+    private Task SendInfoAsync(Ctx ctx)
+    {
+        var cfg = ctx.Cfg;
+        var info = cfg.Info;
+        var parts = new List<string> { $"*{cfg.BusinessName}*" };
+        if (!string.IsNullOrWhiteSpace(info.Address)) parts.Add($"📍 {info.Address.Trim()}");
+        if (!string.IsNullOrWhiteSpace(info.MapsUrl)) parts.Add($"🗺️ {info.MapsUrl.Trim()}");
+        parts.Add("🕘 *Horário de funcionamento*\n" + string.Join("\n", BotFormat.OpeningHours(cfg.Hours)));
+        if (cfg.Bot.ShowPrices)
+        {
+            var prices = cfg.Services.Where(x => x.Active).Select(sv =>
+            {
+                var values = cfg.EnabledVehicleTypes.Select(sv.PriceFor).Where(p => p is not null).Select(p => p!.Value).ToList();
+                var price = values.Count == 0 ? "sob consulta"
+                    : values.Min() == values.Max() ? BotFormat.Money(values.Min())
+                    : $"a partir de {BotFormat.Money(values.Min())}";
+                return $"• {sv.Name}: {price}";
+            }).ToList();
+            if (prices.Count > 0) parts.Add("💰 *Preços*\n" + string.Join("\n", prices));
+        }
+        if (!string.IsNullOrWhiteSpace(info.Payment)) parts.Add($"💳 {info.Payment.Trim()}");
+        if (!string.IsNullOrWhiteSpace(info.Notes)) parts.Add(info.Notes.Trim());
+        return TextAsync(ctx, BotFormat.Truncate(string.Join("\n\n", parts), CloudLimits.Text));
     }
 
     /* ---------- Comandos globais e erros ---------- */
@@ -529,19 +830,26 @@ public sealed partial class BookingFlow(IAgendaService agenda, IBotStore store, 
         }));
     }
 
-    private Task CancelFlowAsync(Ctx ctx)
+    private async Task CancelFlowAsync(Ctx ctx)
     {
-        var inProgress = ctx.S.State is not (BotStates.Idle or BotStates.WithAttendant);
+        var inProgress = ctx.S.State is not (BotStates.Idle or BotStates.WithAttendant or BotStates.MyBookings or BotStates.BookingAction);
         ctx.S.Reset();
-        return TextAsync(ctx, inProgress
-            ? "Tudo bem, não agendei nada. Quando quiser, é só mandar *menu*. 👋"
-            : "Não há agendamento em andamento. Para marcar um horário, mande *menu*.\n" +
-              "Para cancelar um horário já marcado, use o botão do lembrete ou digite *atendente*.");
+        if (inProgress)
+        {
+            await TextAsync(ctx, "Tudo bem, não agendei nada. Quando quiser, é só mandar *menu*. 👋");
+            return;
+        }
+        if ((await UpcomingAsync(ctx)).Count > 0)
+        {
+            await ShowMyBookingsAsync(ctx, "Não há agendamento em andamento. Para cancelar ou remarcar um horário marcado, escolha abaixo.\n\n");
+            return;
+        }
+        await TextAsync(ctx, "Não há agendamento em andamento nem horário marcado. Para marcar um horário, mande *menu*.");
     }
 
     private async Task SetReminderOptInAsync(Ctx ctx, bool on)
     {
-        var existing = await agenda.GetClientAsync(ctx.BranchId, ctx.S.Phone, ctx.Ct);
+        var existing = await ClientAsync(ctx);
         var name = existing?.Name is { Length: > 0 } n ? n : ctx.S.ProfileName ?? string.Empty;
         await agenda.UpsertClientAsync(ctx.BranchId, ctx.S.Phone,
             new ClientRequest { Phone = ctx.S.Phone, Name = name, ReminderOptIn = on, OptInAt = on ? Local(ctx.Now) : null }, ctx.Ct);
@@ -569,24 +877,74 @@ public sealed partial class BookingFlow(IAgendaService agenda, IBotStore store, 
             return;
         }
         await TextAsync(ctx, "Não entendi 🤔 Toque numa das opções ou digite *menu* para recomeçar.");
+        var invalid = s.InvalidCount;
         await (s.State switch
         {
+            BotStates.ChoosingVehicle => RepeatVehicleChoiceAsync(ctx),
             BotStates.ChoosingVehicleType => AskVehicleTypeAsync(ctx),
             BotStates.ChoosingDay => AskDayAsync(ctx),
             BotStates.ChoosingSlot => AskSlotAsync(ctx),
             BotStates.AskingVehicle => AskVehicleAsync(ctx),
             BotStates.Confirming => AskConfirmAsync(ctx),
+            BotStates.MyBookings or BotStates.BookingAction => ShowMyBookingsAsync(ctx),
             _ => AskServiceAsync(ctx, greet: false),
         });
+        s.InvalidCount = invalid; // reabrir a lista não zera a contagem de erros
+    }
+
+    private async Task RepeatVehicleChoiceAsync(Ctx ctx)
+    {
+        if (!await AskRegisteredVehicleAsync(ctx)) await AskVehicleTypeAsync(ctx);
     }
 
     /* ---------- Apoio ---------- */
 
+    private async Task<ClientDto?> ClientAsync(Ctx ctx)
+    {
+        if (!ctx.ClientLoaded)
+        {
+            ctx.Client = await agenda.GetClientAsync(ctx.BranchId, ctx.S.Phone, ctx.Ct);
+            ctx.ClientLoaded = true;
+        }
+        return ctx.Client;
+    }
+
+    /// <summary>Agendamentos do cliente cadastrado com este telefone (do mais novo para o mais antigo).</summary>
+    private async Task<IReadOnlyList<BookingDto>> HistoryAsync(Ctx ctx)
+    {
+        if (ctx.History is null)
+        {
+            var client = await ClientAsync(ctx);
+            ctx.History = client is not null && Guid.TryParse(client.Id, out var id)
+                ? await agenda.ClientBookingsAsync(ctx.BranchId, id, ctx.Ct)
+                : [];
+        }
+        return ctx.History;
+    }
+
+    /// <summary>Horários marcados que ainda não começaram, do mais próximo ao mais distante.</summary>
+    private async Task<IReadOnlyList<BookingDto>> UpcomingAsync(Ctx ctx) =>
+        (await HistoryAsync(ctx))
+            .Where(b => b.Status == "scheduled" && BotFormat.ParseDate(b.Date).AddMinutes(b.Start) > ctx.Now)
+            .OrderBy(b => b.Date, StringComparer.Ordinal)
+            .ThenBy(b => b.Start)
+            .ToList();
+
+    /// <summary>Primeiro nome: do cadastro, senão do perfil do WhatsApp.</summary>
     private static string Name(Ctx ctx)
     {
-        var n = BotFormat.FirstName(ctx.S.ProfileName);
+        var n = BotFormat.FirstName(ctx.Client?.Name is { Length: > 0 } registered ? registered : ctx.S.ProfileName);
         return n.Length == 0 ? "cliente" : n;
     }
+
+    /// <summary>Nome da reserva: o do cadastro (o perfil do WhatsApp não sobrescreve), senão o do perfil.</summary>
+    private static string ClientName(Ctx ctx) =>
+        ctx.Client?.Name is { Length: > 0 } registered ? registered
+        : !string.IsNullOrWhiteSpace(ctx.S.ProfileName) ? ctx.S.ProfileName!
+        : "Cliente WhatsApp";
+
+    private static string VehicleTitle(string? vehicle, string? plate) =>
+        string.Join(" · ", new[] { vehicle, plate }.Where(x => !string.IsNullOrEmpty(x)));
 
     private static string Local(DateTime d) => AgendaFormat.LocalDateTime(d);
 
@@ -654,10 +1012,10 @@ public sealed partial class BookingFlow(IAgendaService agenda, IBotStore store, 
     private async Task SendAsync(Guid branchId, string phone, IMessagingChannel channel, OutgoingMessage m, CancellationToken ct)
     {
         var wamId = await channel.SendAsync(branchId, phone, m, ct);
-        await store.LogMessageAsync(branchId, phone, "out", m.Kind, m.Body, wamId, ct);
+        await store.LogMessageAsync(branchId, phone, "out", m.Kind, m.Body, wamId, new BotLogExtra(BotDtoMapping.MetaJson(m)), ct);
     }
 
-    [GeneratedRegex(@"^(conf|rem|canc):(.+)$")]
+    [GeneratedRegex(@"^(conf|rem|canc|cask):(.+)$")]
     private static partial Regex ReminderRegex();
 
     [GeneratedRegex(@"^slot:(\d+)$")]

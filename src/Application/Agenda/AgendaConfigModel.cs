@@ -25,6 +25,9 @@ public sealed class AgendaConfigModel
     /// <summary>Textos do bot e do lembrete (Ajustes → Bot e mensagens). Vazio = padrão.</summary>
     public BotTextsModel Texts { get; set; } = new();
 
+    /// <summary>Endereço, mapa, pagamento e recado que o bot manda quando o cliente pede informações.</summary>
+    public BusinessInfoModel Info { get; set; } = new();
+
     /// <summary>Por tipo ("SUV"): nome mostrado e se está ativo. Ausente = nome padrão e ativo.</summary>
     public Dictionary<string, VehicleTypeConfigModel> VehicleTypes { get; set; } = [];
 
@@ -120,7 +123,8 @@ public sealed class AgendaConfigModel
               "price": { "Hatch": 150, "Sedan": 150, "SUV": 180, "Picape": 200 } }
           ],
           "reminder": { "sendAt": 600, "windowStart": 540, "windowEnd": 1140, "minLeadHours": 24, "mondayPolicy": "saturday" },
-          "bot": { "daysAhead": 7, "sessionTimeoutMin": 30, "maxInvalidAttempts": 3, "minNoticeMin": 60, "cancelMinHours": 0, "askVehicle": true, "showPrices": true }
+          "bot": { "daysAhead": 7, "sessionTimeoutMin": 30, "maxInvalidAttempts": 3, "minNoticeMin": 60, "cancelMinHours": 0, "askVehicle": true, "showPrices": true,
+                   "maxUpcoming": 3, "noShowLimit": 2, "noShowDays": 180 }
         }
         """;
 }
@@ -170,6 +174,22 @@ public sealed class BotSettingsModel
     public int CancelMinHours { get; set; }
     public bool AskVehicle { get; set; } = true;
     public bool ShowPrices { get; set; } = true;
+
+    /// <summary>Horários futuros que um número pode ter marcados pelo bot. 0 = sem limite.</summary>
+    public int MaxUpcoming { get; set; } = 3;
+
+    /// <summary>Faltas (nos últimos <see cref="NoShowDays"/> dias) a partir das quais o bot manda agendar com a equipe. 0 = desligado.</summary>
+    public int NoShowLimit { get; set; } = 2;
+    public int NoShowDays { get; set; } = 180;
+}
+
+/// <summary>Informações da estética para o bot. Vazio = não mostra a linha.</summary>
+public sealed class BusinessInfoModel
+{
+    public string? Address { get; set; }
+    public string? MapsUrl { get; set; }
+    public string? Payment { get; set; }
+    public string? Notes { get; set; }
 }
 
 public sealed class TermsModel

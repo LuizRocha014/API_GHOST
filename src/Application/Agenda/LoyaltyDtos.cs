@@ -75,6 +75,12 @@ public sealed class ClientPlanRequest
     public string? VehicleType { get; set; }
 }
 
+/// <summary>Plano que cobriria um serviço num dia: <c>Used</c> de <c>TimesPerMonth</c> no mês <c>Month</c> ('AAAA-MM').</summary>
+public sealed record PlanCoverageDto(string PlanId, string PlanName, int TimesPerMonth, int Used, string Month)
+{
+    public bool HasRoom => Used < TimesPerMonth;
+}
+
 /// <summary>Quantos agendamentos de cada serviço o plano já cobriu no período (lido pelo repositório).</summary>
 public sealed class PlanUsageRow
 {

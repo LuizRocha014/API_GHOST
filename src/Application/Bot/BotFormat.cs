@@ -33,6 +33,35 @@ public static partial class BotFormat
 
     public static string Hm(int minutes) => AgendaFormat.Hm(minutes);
 
+    /// <summary>"novembro".</summary>
+    public static string MonthName(string iso) => Months[ParseDate(iso).Month - 1];
+
+    /// <summary>
+    /// Horário de funcionamento agrupando dias seguidos iguais, de segunda a domingo:
+    /// "Seg a Sex: 08:00 às 18:00", "Sáb: 08:00 às 13:00", "Dom: fechado".
+    /// </summary>
+    public static IReadOnlyList<string> OpeningHours(IReadOnlyList<int[]?> hours)
+    {
+        int[] order = [1, 2, 3, 4, 5, 6, 0];
+        string Value(int day)
+        {
+            var h = day < hours.Count ? hours[day] : null;
+            return h is { Length: >= 2 } && h[1] > h[0] ? $"{Hm(h[0])} às {Hm(h[1])}" : "fechado";
+        }
+
+        var lines = new List<string>();
+        var i = 0;
+        while (i < order.Length)
+        {
+            var j = i;
+            while (j + 1 < order.Length && Value(order[j + 1]) == Value(order[i])) j++;
+            var label = i == j ? WeekdaysShort[order[i]] : $"{WeekdaysShort[order[i]]} a {WeekdaysShort[order[j]]}";
+            lines.Add($"{label}: {Value(order[i])}");
+            i = j + 1;
+        }
+        return lines;
+    }
+
     /// <summary>"45 min", "1h", "1h30".</summary>
     public static string Duration(int minutes)
     {

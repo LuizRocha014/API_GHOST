@@ -375,6 +375,7 @@ public sealed class AppDbContext : DbContext
             e.Property(x => x.Phone).HasMaxLength(AgendaService.MaxPhoneLength);
             e.Property(x => x.State).HasMaxLength(32);
             e.Property(x => x.DataJson).HasColumnType("nvarchar(max)");
+            e.Property(x => x.SeenAt).HasColumnType("datetime2");
             e.Property(x => x.CreatedAt).HasColumnType("datetime2");
             e.Property(x => x.UpdatedAt).HasColumnType("datetime2");
             e.HasIndex(x => new { x.BranchId, x.Phone }).IsUnique();
@@ -399,6 +400,8 @@ public sealed class AppDbContext : DbContext
             e.Property(x => x.Kind).HasMaxLength(16);
             e.Property(x => x.Body).HasMaxLength(4096);
             e.Property(x => x.WamId).HasMaxLength(128);
+            e.Property(x => x.Meta).HasColumnType("nvarchar(max)");
+            e.Property(x => x.Author).HasMaxLength(80);
             e.Property(x => x.CreatedAt).HasColumnType("datetime2");
             e.Property(x => x.UpdatedAt).HasColumnType("datetime2");
             e.HasIndex(x => new { x.BranchId, x.Phone, x.CreatedAt });

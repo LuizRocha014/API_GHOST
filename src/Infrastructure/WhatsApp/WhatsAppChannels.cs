@@ -118,7 +118,7 @@ public sealed class WhatsAppReminderSender(
         var wamId = await channel.SendAsync(booking.BranchId, phone, message, ct);
         try
         {
-            await store.LogMessageAsync(booking.BranchId, phone, "out", message.Kind, message.Body, wamId, ct);
+            await store.LogMessageAsync(booking.BranchId, phone, "out", message.Kind, message.Body, wamId, new BotLogExtra(BotDtoMapping.MetaJson(message)), ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

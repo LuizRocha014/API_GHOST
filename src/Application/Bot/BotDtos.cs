@@ -37,9 +37,49 @@ public sealed record BotMessageDto(
 
 public sealed record BotSimulationResponse(string Estado, IReadOnlyList<BotMessageDto> Mensagens);
 
-public sealed record BotLogDto(string Telefone, string Direcao, string Tipo, string Texto, string? WamId, string Em);
+/// <summary>
+/// Mensagem da conversa. <c>Direcao</c>: in (cliente), out (bot) ou agent (equipe, com <c>Autor</c>).
+/// Lista, botões e template trazem o botão e as opções que o cliente viu.
+/// </summary>
+public sealed record BotLogDto(
+    string Telefone,
+    string Direcao,
+    string Tipo,
+    string Texto,
+    string? WamId,
+    string Em,
+    string? Autor = null,
+    string? Botao = null,
+    IReadOnlyList<BotOptionDto>? Opcoes = null);
 
-public sealed record BotConversationDto(string Estado, IReadOnlyList<BotLogDto> Mensagens);
+/// <summary>
+/// Conversa com um número. <c>JanelaAberta</c>: o cliente escreveu nas últimas 24 h, então a equipe pode responder
+/// com texto livre (fora dela, a Meta só aceita template).
+/// </summary>
+public sealed record BotConversationDto(
+    string Estado,
+    IReadOnlyList<BotLogDto> Mensagens,
+    string? Telefone = null,
+    string? Nome = null,
+    string? ClienteId = null,
+    bool JanelaAberta = false,
+    string? JanelaFechaEm = null);
+
+/// <summary>Linha da caixa de entrada.</summary>
+public sealed record BotConversationSummaryDto(
+    string Telefone,
+    string Nome,
+    string? ClienteId,
+    string Estado,
+    bool PrecisaAtendente,
+    int NaoLidas,
+    bool JanelaAberta,
+    BotLogDto Ultima);
+
+public sealed class BotReplyRequest
+{
+    public string Texto { get; set; } = string.Empty;
+}
 
 /// <summary>O que cadastrar no WhatsApp Manager para o lembrete D-1.</summary>
 public sealed record ReminderTemplateDto(
@@ -63,4 +103,34 @@ public static class BotDtoMapping
     };
 
     private static BotOptionDto Option(BotOption o) => new(o.Id, o.Title, o.Description);
+
+    private sealed record MetaModel(string? Botao, IReadOnlyList<BotOptionDto> Opcoes);
+
+    /// <summary>Botão e opções da mensagem, para guardar junto da conversa. Texto simples não tem.</summary>
+    public static string? MetaJson(OutgoingMessage m)
+    {
+        var dto = m.ToDto();
+        return dto.Opcoes.Count == 0 && dto.Botao is null
+            ? null
+            : System.Text.Json.JsonSerializer.Serialize(new MetaModel(dto.Botao, dto.Opcoes), Agenda.AgendaConfigModel.Json);
+    }
+
+    public static BotLogDto ToDto(this BotLogEntry e)
+    {
+        MetaModel? meta = null;
+        if (!string.IsNullOrEmpty(e.Meta))
+        {
+            try
+            {
+                meta = System.Text.Json.JsonSerializer.Deserialize<MetaModel>(e.Meta, Agenda.AgendaConfigModel.Json);
+            }
+            catch (System.Text.Json.JsonException)
+            {
+            }
+        }
+        return new BotLogDto(
+            e.Phone, e.Direction, e.Kind, e.Body, e.WamId,
+            DateTime.SpecifyKind(e.CreatedAt, DateTimeKind.Utc).ToString("O", System.Globalization.CultureInfo.InvariantCulture),
+            e.Author, meta?.Botao, meta?.Opcoes);
+    }
 }

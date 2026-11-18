@@ -30,6 +30,7 @@ public static class DependencyInjection
         services.AddScoped<IUserBranchAccessService, UserBranchAccessService>();
         services.AddScoped<IAgendaService, AgendaService>();
         services.AddScoped<BookingFlow>();
+        services.AddScoped<BotInboxService>();
         return services;
     }
 }

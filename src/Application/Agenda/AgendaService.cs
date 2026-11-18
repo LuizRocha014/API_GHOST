@@ -51,6 +51,13 @@ public interface IAgendaService
 
     /// <summary>Planos do cliente com o uso no mês de <paramref name="date"/> (nulo = mês atual).</summary>
     Task<IReadOnlyList<ClientPlanDto>> ListClientPlansAsync(Guid branchId, Guid clientId, string? date, CancellationToken ct = default);
+
+    /// <summary>
+    /// Plano do cliente que cobriria o serviço no dia (o do carro, ou o sem carro do mesmo tipo) e quanto já foi usado no mês.
+    /// Nulo quando nenhum plano em andamento inclui o serviço. Só consulta: quem aplica o plano é a reserva.
+    /// </summary>
+    Task<PlanCoverageDto?> PlanCoverageAsync(
+        Guid branchId, Guid clientId, Guid? vehicleId, string vehicleType, string serviceId, string date, CancellationToken ct = default);
     Task<ClientPlanDto> CreateClientPlanAsync(Guid branchId, Guid clientId, ClientPlanRequest request, CancellationToken ct = default);
     Task<ClientPlanDto> UpdateClientPlanAsync(Guid branchId, Guid clientId, Guid id, ClientPlanRequest request, CancellationToken ct = default);
 
@@ -648,7 +655,8 @@ public sealed class AgendaService(IAgendaRepository repo, IAgendaClock clock, IR
 
     private sealed record VehicleForm(Guid? Id, string Vehicle, string Plate, string VehicleType, string Color);
 
-    private sealed record ClientForm(string Name, string Phone, bool ReminderOptIn, bool Vip, string Notes, IReadOnlyList<VehicleForm> Vehicles);
+    private sealed record ClientForm(
+        string Name, string Phone, bool ReminderOptIn, bool Vip, string Notes, bool BotBlocked, IReadOnlyList<VehicleForm> Vehicles);
 
     private static ClientForm ValidateClientForm(ClientFormRequest req)
     {
@@ -675,7 +683,7 @@ public sealed class AgendaService(IAgendaRepository repo, IAgendaClock clock, IR
         var repeated = vehicles.Where(v => v.Plate.Length > 0).GroupBy(v => v.Plate).FirstOrDefault(g => g.Count() > 1);
         if (repeated is not null) throw new AgendaValidationException($"A placa {repeated.Key} aparece em mais de um carro.");
 
-        return new ClientForm(name, phone, req.ReminderOptIn && phone.Length > 0, req.Vip, notes, vehicles);
+        return new ClientForm(name, phone, req.ReminderOptIn && phone.Length > 0, req.Vip, notes, req.BotBlocked, vehicles);
     }
 
     private static void ApplyForm(AgendaClient c, ClientForm form, DateTime nowLocal, DateTime utc)
@@ -686,6 +694,7 @@ public sealed class AgendaService(IAgendaRepository repo, IAgendaClock clock, IR
         c.ReminderOptIn = form.ReminderOptIn;
         c.Vip = form.Vip;
         c.Notes = form.Notes;
+        c.BotBlocked = form.BotBlocked;
         c.UpdatedAt = utc;
     }
 
@@ -930,6 +939,21 @@ public sealed class AgendaService(IAgendaRepository repo, IAgendaClock clock, IR
         var today = clock.NowLocal.Date;
         var upcoming = await repo.PlanUpcomingAsync(branchId, ids, today, ct);
         return plans.Select(p => ClientPlanDto(cfg, p, from, usage, payments, upcoming, today)).ToList();
+    }
+
+    public async Task<PlanCoverageDto?> PlanCoverageAsync(
+        Guid branchId, Guid clientId, Guid? vehicleId, string vehicleType, string serviceId, string date, CancellationToken ct = default)
+    {
+        var day = AgendaFormat.ParseDate(date);
+        var plan = LoyaltyRules.PlanFor(await repo.ListClientPlansAsync(branchId, clientId, ct), vehicleId, vehicleType, day);
+        if (plan is null) return null;
+        var item = LoyaltyRules.ParseItems(plan.ItemsJson).FirstOrDefault(i => i.ServiceId == serviceId);
+        if (item is null) return null;
+        var (from, to) = LoyaltyRules.Month(day);
+        var used = (await repo.PlanUsageAsync(branchId, [plan.Id], from, to, ct))
+            .Where(u => u.ClientPlanId == plan.Id && u.ServiceId == serviceId)
+            .Sum(u => u.Used);
+        return new PlanCoverageDto(plan.Id.ToString(), plan.Name, item.TimesPerMonth, used, LoyaltyRules.MonthKey(day));
     }
 
     private async Task<ClientPlanDto> ClientPlanDtoAsync(Guid branchId, AgendaConfigModel cfg, AgendaClientPlan plan, CancellationToken ct)
