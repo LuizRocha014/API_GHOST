@@ -28,6 +28,23 @@ public sealed class AgendaConfigModel
     /// <summary>Endereço, mapa, pagamento e recado que o bot manda quando o cliente pede informações.</summary>
     public BusinessInfoModel Info { get; set; } = new();
 
+    /// <summary>Bloqueios que se repetem toda semana: intervalo de almoço (todos os boxes), manutenção de um box…</summary>
+    public List<RecurringBlockModel> RecurringBlocks { get; set; } = [];
+
+    /// <summary>Feriados em que a estética fecha.</summary>
+    public HolidayPolicyModel Holidays { get; set; } = new();
+
+    /// <summary>Folga entre dois atendimentos no mesmo box (limpeza), em minutos.</summary>
+    public int BufferMin { get; set; }
+
+    /// <summary>Mensagens automáticas além do lembrete: confirmação do balcão e carro pronto.</summary>
+    public NotifyModel Notify { get; set; } = new();
+
+    /// <summary>Adicionais que entram junto com o serviço (cera, aromatização…), com preço e tempo por tipo de veículo.</summary>
+    public List<ExtraModel> Extras { get; set; } = [];
+
+    public ExtraModel? ExtraById(string? id) => Extras.FirstOrDefault(x => x.Id == id);
+
     /// <summary>Por tipo ("SUV"): nome mostrado e se está ativo. Ausente = nome padrão e ativo.</summary>
     public Dictionary<string, VehicleTypeConfigModel> VehicleTypes { get; set; } = [];
 
@@ -181,6 +198,66 @@ public sealed class BotSettingsModel
     /// <summary>Faltas (nos últimos <see cref="NoShowDays"/> dias) a partir das quais o bot manda agendar com a equipe. 0 = desligado.</summary>
     public int NoShowLimit { get; set; } = 2;
     public int NoShowDays { get; set; } = 180;
+
+    /// <summary>Oferece os adicionais ativos depois do veículo (até 3 por agendamento).</summary>
+    public bool OfferExtras { get; set; } = true;
+}
+
+/// <summary>
+/// Mensagens automáticas pelo WhatsApp (só para quem aceitou receber). Cada uma precisa de um modelo aprovado na Meta,
+/// por isso começam desligadas.
+/// </summary>
+public sealed class NotifyModel
+{
+    /// <summary>Confirmação com o resumo logo depois de agendar pelo balcão (com Remarcar e Cancelar).</summary>
+    public bool Booked { get; set; }
+
+    /// <summary>"Seu carro está pronto" quando o atendimento é concluído.</summary>
+    public bool Ready { get; set; }
+}
+
+/// <summary>Bloqueio semanal. <c>Days</c>: 0 = domingo … 6 = sábado. <c>BoxId</c> nulo = todos os boxes.</summary>
+public sealed class RecurringBlockModel
+{
+    public List<int> Days { get; set; } = [];
+    public int Start { get; set; }
+    public int End { get; set; }
+    public string? BoxId { get; set; }
+    public string Reason { get; set; } = string.Empty;
+
+    public bool AppliesTo(DateTime date) => End > Start && Days.Contains((int)date.DayOfWeek);
+}
+
+public sealed class HolidayPolicyModel
+{
+    /// <summary>Fecha nos feriados nacionais (fixos e Sexta-feira Santa).</summary>
+    public bool National { get; set; }
+
+    /// <summary>Fecha também no Carnaval (segunda e terça) e no Corpus Christi.</summary>
+    public bool Optional { get; set; }
+
+    /// <summary>Datas em que fecha o dia todo (feriado municipal, folga coletiva…).</summary>
+    public List<HolidayModel> Dates { get; set; } = [];
+}
+
+public sealed class HolidayModel
+{
+    /// <summary>'AAAA-MM-DD'.</summary>
+    public string Date { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+}
+
+/// <summary>Adicional do serviço. Sem duração para o tipo = não acrescenta tempo; sem preço = sai de graça.</summary>
+public sealed class ExtraModel
+{
+    public string Id { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+    public Dictionary<string, int> Duration { get; set; } = [];
+    public Dictionary<string, decimal> Price { get; set; } = [];
+    public bool Active { get; set; } = true;
+
+    public int DurationFor(string vehicleType) => Duration.TryGetValue(vehicleType, out var d) && d > 0 ? d : 0;
+    public decimal? PriceFor(string vehicleType) => Price.TryGetValue(vehicleType, out var p) ? p : null;
 }
 
 /// <summary>Informações da estética para o bot. Vazio = não mostra a linha.</summary>
@@ -222,12 +299,20 @@ public sealed class BotTextsModel
     public const string DefaultConfirmed = "Confirmado, te esperamos! 🚗✨\n📅 {data} às {hora}\n🧽 {servico}";
     public const string DefaultAttendant = "Certo! Já avisei a equipe, alguém continua a conversa por aqui em instantes. 🙋\nPara voltar ao agendamento automático, digite *menu*.";
     public const string DefaultReminder = "Olá {nome}! Lembrete do seu horário:\n📅 {data} às {hora}\n🚗 {servico}\n\nVocê confirma?";
+    public const string DefaultCounterBooked = "Olá {nome}! Seu horário na {estetica} está marcado ✅\n📅 {data} às {hora}\n🚗 {servico}";
+    public const string DefaultReady = "Olá {nome}! Seu veículo está pronto ✨\n🚗 {servico}\nPode vir buscar quando quiser. Obrigado pela preferência!";
 
     public string? Greeting { get; set; }
     public string? Booked { get; set; }
     public string? Confirmed { get; set; }
     public string? Attendant { get; set; }
     public string? Reminder { get; set; }
+
+    /// <summary>Confirmação do agendamento feito no balcão (modelo da Meta).</summary>
+    public string? CounterBooked { get; set; }
+
+    /// <summary>"Seu carro está pronto" (modelo da Meta).</summary>
+    public string? Ready { get; set; }
 
     private static string Or(string? value, string fallback) => string.IsNullOrWhiteSpace(value) ? fallback : value;
 
@@ -236,4 +321,6 @@ public sealed class BotTextsModel
     public string ConfirmedText => Or(Confirmed, DefaultConfirmed);
     public string AttendantText => Or(Attendant, DefaultAttendant);
     public string ReminderText => Or(Reminder, DefaultReminder);
+    public string CounterBookedText => Or(CounterBooked, DefaultCounterBooked);
+    public string ReadyText => Or(Ready, DefaultReady);
 }

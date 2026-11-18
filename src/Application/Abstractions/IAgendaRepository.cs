@@ -91,6 +91,9 @@ public interface IAgendaDayTransaction
     Task InsertBookingAsync(AgendaBooking booking);
     Task UpdateBookingStatusAsync(Guid id, string status, DateTime updatedAtUtc);
 
+    /// <summary>Grava a edição: fim, serviço, adicionais, preço, veículo, plano e observações.</summary>
+    Task UpdateBookingAsync(AgendaBooking booking);
+
     Task<AgendaClient?> GetClientAsync(IReadOnlyList<string> phoneVariants);
     Task<AgendaClient?> GetClientByIdAsync(Guid id);
 
@@ -134,10 +137,13 @@ public interface IAgendaDayTransaction
     Task CancelPendingRemindersOfPhonesAsync(IReadOnlyList<string> phoneVariants);
 }
 
-/// <summary>Envio do lembrete pelo canal (WhatsApp Cloud API). Devolve o id da mensagem.</summary>
+/// <summary>
+/// Envio das mensagens da fila pelo canal (WhatsApp Cloud API): <paramref name="type"/> é um de
+/// <c>ReminderTypes</c> (lembrete D-1, confirmação do balcão, carro pronto). Devolve o id da mensagem.
+/// </summary>
 public interface IReminderSender
 {
-    Task<string> SendAsync(AgendaBooking booking, AgendaConfigModel config, CancellationToken ct = default);
+    Task<string> SendAsync(string type, AgendaBooking booking, AgendaConfigModel config, CancellationToken ct = default);
 }
 
 /// <summary>Relógio no fuso da estética (as datas da agenda são locais).</summary>

@@ -25,7 +25,30 @@ public sealed record BookingDto(
     string? RescheduledFrom,
     string? ClientId,
     string? VehicleId,
-    string? ClientPlanId);
+    string? ClientPlanId,
+    IReadOnlyList<BookingExtraDto>? Extras = null);
+
+/// <summary>Adicional ou serviço somado ao agendamento, como estava no dia. <c>Kind</c>: extra ou service.</summary>
+public sealed record BookingExtraDto(string Id, string Kind, string Name, decimal? Price, int Duration);
+
+/// <summary>
+/// Edição de um agendamento marcado ou em atendimento (serviço, adicionais, veículo, preço, observações). Campo nulo
+/// = fica como está. Trocar serviço, tipo de veículo ou adicionais recalcula duração e preço e confere se ainda cabe no
+/// mesmo horário e box; <c>Price</c> fixa um preço manual.
+/// </summary>
+public sealed class EditBookingRequest
+{
+    public string? ServiceId { get; set; }
+    public List<string>? ExtraIds { get; set; }
+    public string? VehicleType { get; set; }
+    public string? Vehicle { get; set; }
+    public string? Plate { get; set; }
+
+    /// <summary>Carro do cliente (o modelo, a placa e o tipo saem do cadastro).</summary>
+    public string? VehicleId { get; set; }
+    public decimal? Price { get; set; }
+    public string? Notes { get; set; }
+}
 
 public sealed class NewBookingRequest
 {
@@ -49,6 +72,9 @@ public sealed class NewBookingRequest
 
     /// <summary>Carro do cliente. Nulo = acha pela placa (ou pelo modelo) e cadastra se for novo.</summary>
     public string? VehicleId { get; set; }
+
+    /// <summary>Adicionais do catálogo (cera, aromatização) ou outros serviços somados ao principal.</summary>
+    public List<string>? ExtraIds { get; set; }
 
     /// <summary>Usa o plano de fidelidade do cliente quando ele cobre o serviço e ainda há uso no mês. Falso = cobra à parte.</summary>
     public bool UsePlan { get; set; } = true;

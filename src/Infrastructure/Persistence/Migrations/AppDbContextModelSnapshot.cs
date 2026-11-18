@@ -102,6 +102,12 @@ namespace Infrastructure.Persistence.Migrations
                     b.Property<int>("EndMin")
                         .HasColumnType("int");
 
+                    b.Property<string>("ExtrasJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("nvarchar(max)")
+                        .HasDefaultValue("[]");
+
                     b.Property<string>("Notes")
                         .IsRequired()
                         .HasMaxLength(1000)

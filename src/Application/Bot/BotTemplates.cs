@@ -10,25 +10,48 @@ namespace Application.Bot;
 public static class BotTemplates
 {
     public const string ReminderName = "lembrete_confirmacao";
+    public const string BookedName = "agendamento_confirmado";
+    public const string ReadyName = "carro_pronto";
     public const string DefaultLanguage = "pt_BR";
 
     public static readonly IReadOnlyList<string> ReminderButtons = ["Confirmar", "Remarcar", "Cancelar"];
 
-    public static TemplateMessage Reminder(BookingDto b, AgendaConfigModel cfg, string name = ReminderName, string language = DefaultLanguage)
+    /// <summary>
+    /// Um modelo da Meta: o tipo da fila que ele atende, o nome padrão, o texto (de Ajustes) e os botões de resposta
+    /// rápida (prefixo do id que volta no webhook + título).
+    /// </summary>
+    public sealed record Spec(
+        string Type, string DefaultName, string Title, Func<BotTextsModel, string> Text, IReadOnlyList<(string Prefix, string Title)> Buttons);
+
+    public static readonly Spec ReminderSpec = new(
+        Domain.Agenda.ReminderTypes.ConfirmationD1, ReminderName, "Lembrete na véspera", t => t.ReminderText,
+        [("conf", ReminderButtons[0]), ("rem", ReminderButtons[1]), ("canc", ReminderButtons[2])]);
+
+    public static readonly Spec BookedSpec = new(
+        Domain.Agenda.ReminderTypes.Booked, BookedName, "Confirmação do agendamento feito no balcão", t => t.CounterBookedText,
+        [("rem", "Remarcar"), ("canc", "Cancelar")]);
+
+    public static readonly Spec ReadySpec = new(
+        Domain.Agenda.ReminderTypes.Ready, ReadyName, "Carro pronto", t => t.ReadyText, []);
+
+    public static readonly IReadOnlyList<Spec> All = [ReminderSpec, BookedSpec, ReadySpec];
+
+    public static Spec For(string type) => All.FirstOrDefault(s => s.Type == type) ?? ReminderSpec;
+
+    public static TemplateMessage Build(Spec spec, BookingDto b, AgendaConfigModel cfg, string? name = null, string language = DefaultLanguage)
     {
-        var text = cfg.Texts.ReminderText;
+        var text = spec.Text(cfg.Texts);
         var values = BotFormat.BookingValues(b, cfg.BusinessName, cfg.BoxName(b.BoxId));
         return new TemplateMessage(
-            name,
+            string.IsNullOrWhiteSpace(name) ? spec.DefaultName : name,
             language,
             BotFormat.Variables(text).Select(v => Param(values.GetValueOrDefault(v))).ToList(),
-            [
-                new TemplateButton($"conf:{b.Id}", ReminderButtons[0]),
-                new TemplateButton($"rem:{b.Id}", ReminderButtons[1]),
-                new TemplateButton($"canc:{b.Id}", ReminderButtons[2]),
-            ],
+            spec.Buttons.Select(x => new TemplateButton($"{x.Prefix}:{b.Id}", x.Title)).ToList(),
             BotFormat.Fill(text, values));
     }
+
+    public static TemplateMessage Reminder(BookingDto b, AgendaConfigModel cfg, string name = ReminderName, string language = DefaultLanguage) =>
+        Build(ReminderSpec, b, cfg, name, language);
 
     /// <summary>Texto no formato a cadastrar na Meta: cada variável vira {{1}}, {{2}}… na ordem em que aparece.</summary>
     public static string MetaBody(string text)

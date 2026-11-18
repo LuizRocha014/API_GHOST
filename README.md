@@ -127,6 +127,11 @@ renovação, filiais, ajustes, disponibilidade, 6 reservas simultâneas no mesmo
 bloqueio, lembrete com envio local, resposta, remarcação, cadastro de clientes (carros, VIP, histórico, agendar escolhendo
 cliente e carro) e erros 400/401/403/404/409. Apaga o que cria.
 
+`python infra/e2e/fase3_e2e.py` cobre intervalos fixos (almoço), feriados (nacionais, opcionais e datas próprias),
+folga entre atendimentos, adicionais e serviço somado, edição do agendamento (`PUT agendamentos/{id}`), as mensagens
+automáticas (confirmação do balcão e carro pronto, pela fila do lembrete), os adicionais no bot e o adicional que saiu do
+catálogo (continua no agendamento, na edição e na remarcação como foi marcado) — 59 verificações.
+
 `python infra/e2e/bot_e2e.py` faz o mesmo com o bot do WhatsApp (111 verificações: conversa completa pelo simulador,
 webhook assinado com status de entrega e botão do template, meus agendamentos, carros e plano do cliente, proteções e a
 caixa de entrada da equipe). Precisa dos segredos de desenvolvimento do WhatsApp nos

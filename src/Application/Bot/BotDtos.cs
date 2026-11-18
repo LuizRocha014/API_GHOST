@@ -89,7 +89,9 @@ public sealed record ReminderTemplateDto(
     string Texto,
     IReadOnlyList<string> Variaveis,
     IReadOnlyList<string> Botoes,
-    string Previa);
+    string Previa,
+    string Tipo = "confirmation_d1",
+    string Titulo = "Lembrete na véspera");
 
 public static class BotDtoMapping
 {

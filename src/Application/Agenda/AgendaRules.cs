@@ -20,23 +20,35 @@ public static class AvailabilityRules
 {
     public static int WeekdayIndex(DateTime date) => (int)date.DayOfWeek; // 0 = domingo
 
+    /// <summary>Horário de funcionamento do dia; nulo se fecha (dia sem horário ou feriado em que a estética fecha).</summary>
     public static MinuteRange? HoursOf(AgendaConfigModel cfg, DateTime date)
     {
         var i = WeekdayIndex(date);
         if (i >= cfg.Hours.Count) return null;
         var h = cfg.Hours[i];
-        return h is { Length: 2 } && h[1] > h[0] ? new MinuteRange(h[0], h[1]) : null;
+        if (h is not { Length: 2 } || h[1] <= h[0]) return null;
+        return HolidayRules.ClosedReason(cfg, date) is null ? new MinuteRange(h[0], h[1]) : null;
     }
+
+    /// <summary>Bloqueios semanais que caem no dia (almoço, manutenção fixa).</summary>
+    public static IReadOnlyList<BusyItem> RecurringBlocks(AgendaConfigModel cfg, DateTime date) =>
+        cfg.RecurringBlocks.Where(r => r.AppliesTo(date))
+            .Select(r => new BusyItem(null, string.IsNullOrEmpty(r.BoxId) ? null : r.BoxId, r.Start, r.End))
+            .ToList();
 
     public static int CeilTo(int m, int step) => (m + step - 1) / step * step;
 
-    /// <summary>Intervalos ocupados de um box (agendamentos ativos + bloqueios), ordenados e mesclados.</summary>
-    public static List<MinuteRange> BusyIntervals(string boxId, IEnumerable<BusyItem> bookings, IEnumerable<BusyItem> blocks, Guid? ignoreBookingId)
+    /// <summary>
+    /// Intervalos ocupados de um box (agendamentos ativos + bloqueios), ordenados e mesclados. <paramref name="buffer"/>:
+    /// folga em volta de cada agendamento (limpeza do box); bloqueios não ganham folga.
+    /// </summary>
+    public static List<MinuteRange> BusyIntervals(
+        string boxId, IEnumerable<BusyItem> bookings, IEnumerable<BusyItem> blocks, Guid? ignoreBookingId, int buffer = 0)
     {
         var raw = bookings
             .Where(b => b.BoxId == boxId && b.BookingId != ignoreBookingId)
-            .Concat(blocks.Where(k => k.BoxId is null || k.BoxId == boxId))
-            .Select(x => new MinuteRange(x.Start, x.End))
+            .Select(b => new MinuteRange(b.Start - buffer, b.End + buffer))
+            .Concat(blocks.Where(k => k.BoxId is null || k.BoxId == boxId).Select(x => new MinuteRange(x.Start, x.End)))
             .OrderBy(x => x.Start)
             .ToList();
         var merged = new List<MinuteRange>();
@@ -68,7 +80,9 @@ public static class AvailabilityRules
 
     /// <summary>
     /// Horários de início livres para <paramref name="duration"/> minutos. Cada horário traz os boxes
-    /// possíveis, do que deixa menos buraco na agenda para o que deixa mais.
+    /// possíveis, do que deixa menos buraco na agenda para o que deixa mais. O box precisa atender o serviço e os
+    /// serviços somados (<paramref name="extraServiceIds"/>). Feriados, bloqueios semanais e a folga entre
+    /// atendimentos saem da configuração.
     /// </summary>
     public static List<SlotOptionDto> AvailableStarts(
         AgendaConfigModel cfg,
@@ -79,7 +93,8 @@ public static class AvailabilityRules
         IReadOnlyList<BusyItem> blocks,
         DateTime nowLocal,
         int minNoticeMin,
-        Guid? ignoreBookingId)
+        Guid? ignoreBookingId,
+        IReadOnlyList<string>? extraServiceIds = null)
     {
         var hours = HoursOf(cfg, date);
         if (hours is null || duration <= 0) return [];
@@ -89,13 +104,15 @@ public static class AvailabilityRules
         var from = hours.Value.Start;
         if (date.Date == today)
             from = Math.Max(from, CeilTo((int)nowLocal.TimeOfDay.TotalMinutes + Math.Max(0, minNoticeMin), step));
+        var allBlocks = blocks.Concat(RecurringBlocks(cfg, date)).ToList();
+        var buffer = Math.Max(0, cfg.BufferMin);
 
         var byStart = new SortedDictionary<int, List<(string Id, int Slack, int Order)>>();
         for (var order = 0; order < cfg.Boxes.Count; order++)
         {
             var box = cfg.Boxes[order];
-            if (!box.Serves(serviceId)) continue;
-            var busy = BusyIntervals(box.Id, bookings, blocks, ignoreBookingId);
+            if (!box.Serves(serviceId) || (extraServiceIds is not null && !extraServiceIds.All(box.Serves))) continue;
+            var busy = BusyIntervals(box.Id, bookings, allBlocks, ignoreBookingId, buffer);
             foreach (var g in FreeWindows(hours.Value, busy, from))
             {
                 for (var t = CeilTo(g.Start, step); t + duration <= g.End; t += step)
@@ -112,6 +129,86 @@ public static class AvailabilityRules
                 kv.Key + duration,
                 kv.Value.OrderBy(x => x.Slack).ThenBy(x => x.Order).Select(x => x.Id).ToList()))
             .ToList();
+    }
+
+    /// <summary>
+    /// O atendimento de <paramref name="duration"/> minutos cabe começando em <paramref name="start"/> no box, sem olhar o
+    /// passo da agenda nem a hora atual (edição de um agendamento que já está marcado ou em andamento).
+    /// </summary>
+    public static bool Fits(
+        AgendaConfigModel cfg, DateTime date, string boxId, int start, int duration,
+        IReadOnlyList<BusyItem> bookings, IReadOnlyList<BusyItem> blocks, Guid? ignoreBookingId)
+    {
+        var hours = HoursOf(cfg, date);
+        if (hours is null || duration <= 0 || start < hours.Value.Start || start + duration > hours.Value.End) return false;
+        var busy = BusyIntervals(boxId, bookings, blocks.Concat(RecurringBlocks(cfg, date)), ignoreBookingId, Math.Max(0, cfg.BufferMin));
+        return busy.All(iv => iv.End <= start || iv.Start >= start + duration);
+    }
+}
+
+/// <summary>Adicionais e serviços somados ao agendamento (cera, aromatização, um segundo serviço).</summary>
+public static class BookingExtras
+{
+    public const int MaxItems = 10;
+    public const string KindExtra = "extra";
+    public const string KindService = "service";
+
+    public static IReadOnlyList<BookingExtraDto> Parse(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return [];
+        try
+        {
+            return System.Text.Json.JsonSerializer.Deserialize<List<BookingExtraDto>>(json, AgendaConfigModel.Json) ?? [];
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return [];
+        }
+    }
+
+    public static string Json(IEnumerable<BookingExtraDto> items) => System.Text.Json.JsonSerializer.Serialize(items, AgendaConfigModel.Json);
+
+    public static int Duration(IEnumerable<BookingExtraDto> items) => items.Sum(x => Math.Max(0, x.Duration));
+
+    public static decimal Price(IEnumerable<BookingExtraDto> items) => items.Sum(x => x.Price ?? 0m);
+
+    /// <summary>Preço do serviço + adicionais. Nulo só se nada tem preço.</summary>
+    public static decimal? Total(decimal? main, IReadOnlyList<BookingExtraDto> items) =>
+        main is null && items.All(x => x.Price is null) ? null : (main ?? 0m) + Price(items);
+
+    public static IReadOnlyList<string> ServiceIds(IEnumerable<BookingExtraDto> items) =>
+        items.Where(x => x.Kind == KindService).Select(x => x.Id).ToList();
+
+    /// <summary>"Lavagem simples + Cera, Aromatização".</summary>
+    public static string Title(string serviceName, IEnumerable<BookingExtraDto> items)
+    {
+        var names = items.Select(x => x.Name).Where(n => n.Length > 0).ToList();
+        return names.Count == 0 ? serviceName : $"{serviceName} + {string.Join(", ", names)}";
+    }
+
+    /// <summary>
+    /// Ids escolhidos → itens com nome, preço e tempo do tipo de veículo. Vale um adicional do catálogo ou outro serviço ativo
+    /// (diferente do principal). Repetidos contam uma vez. Um item que já está no agendamento (<paramref name="current"/>) e saiu
+    /// do catálogo (apagado ou desligado) continua como foi marcado.
+    /// </summary>
+    public static List<BookingExtraDto> Resolve(
+        AgendaConfigModel cfg, ServiceModel main, string vehicleType, IEnumerable<string>? ids, bool skipMissing = false,
+        IReadOnlyList<BookingExtraDto>? current = null)
+    {
+        var list = new List<BookingExtraDto>();
+        foreach (var id in (ids ?? []).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct())
+        {
+            if (cfg.ExtraById(id) is { Active: true } x)
+                list.Add(new BookingExtraDto(x.Id, KindExtra, x.Name, x.PriceFor(vehicleType), x.DurationFor(vehicleType)));
+            else if (cfg.ServiceById(id) is { Active: true } s && s.Id != main.Id)
+                list.Add(new BookingExtraDto(s.Id, KindService, s.Name, s.PriceFor(vehicleType), s.DurationFor(vehicleType)));
+            else if (current?.FirstOrDefault(c => c.Id == id) is { } kept && kept.Id != main.Id)
+                list.Add(kept);
+            else if (!skipMissing)
+                throw new AgendaValidationException("Adicional inválido ou inativo.");
+        }
+        if (list.Count > MaxItems) throw new AgendaValidationException($"No máximo {MaxItems} adicionais por agendamento.");
+        return list;
     }
 }
 
@@ -215,7 +312,8 @@ public static class AgendaMapping
         b.RescheduledFrom?.ToString(),
         b.ClientId?.ToString(),
         b.VehicleId?.ToString(),
-        b.ClientPlanId?.ToString());
+        b.ClientPlanId?.ToString(),
+        BookingExtras.Parse(b.ExtrasJson));
 
     public static BlockDto ToDto(this AgendaBlock k) =>
         new(k.Id.ToString(), k.BoxId, AgendaFormat.Date(k.Date), k.StartMin, k.EndMin, k.Reason);

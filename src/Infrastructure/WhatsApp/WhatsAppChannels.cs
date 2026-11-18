@@ -110,10 +110,11 @@ public sealed class WhatsAppReminderSender(
     IOptions<WhatsAppOptions> options,
     ILogger<WhatsAppReminderSender> logger) : IReminderSender
 {
-    public async Task<string> SendAsync(AgendaBooking booking, AgendaConfigModel config, CancellationToken ct = default)
+    public async Task<string> SendAsync(string type, AgendaBooking booking, AgendaConfigModel config, CancellationToken ct = default)
     {
         var o = options.Value;
-        var message = BotTemplates.Reminder(booking.ToDto(), config, o.ReminderTemplate, o.TemplateLanguage);
+        var spec = BotTemplates.For(type);
+        var message = BotTemplates.Build(spec, booking.ToDto(), config, o.TemplateNameFor(spec), o.TemplateLanguage);
         var phone = AgendaFormat.NormalizePhone(booking.Phone);
         var wamId = await channel.SendAsync(booking.BranchId, phone, message, ct);
         try

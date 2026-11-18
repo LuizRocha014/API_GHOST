@@ -14,7 +14,7 @@ public sealed class AgendaRepository(SqlSession session) : IAgendaRepository
 
     internal const string BookingColumns = """
         Id, BranchId, [Date], StartMin, EndMin, BoxId, ServiceId, ServiceName, Price, VehicleType, Vehicle, Plate,
-        ClientName, Phone, Notes, Status, Origin, RescheduledFrom, ClientId, VehicleId, ClientPlanId, CreatedAt, UpdatedAt, Active
+        ClientName, Phone, Notes, Status, Origin, RescheduledFrom, ClientId, VehicleId, ClientPlanId, ExtrasJson, CreatedAt, UpdatedAt, Active
         """;
 
     internal const string ReminderColumns = """
@@ -453,13 +453,30 @@ internal sealed class AgendaTransaction(SqlConnection conn, DbTransaction tx, Gu
         const string sql = """
             INSERT INTO AgendaBookings (Id, BranchId, [Date], StartMin, EndMin, BoxId, ServiceId, ServiceName, Price, VehicleType, Vehicle, Plate,
                                         ClientName, Phone, Notes, Status, Origin, RescheduledFrom, ClientId, VehicleId, ClientPlanId,
-                                        CreatedAt, UpdatedAt, Active)
+                                        ExtrasJson, CreatedAt, UpdatedAt, Active)
             VALUES (@Id, @BranchId, @Date, @StartMin, @EndMin, @BoxId, @ServiceId, @ServiceName, @Price, @VehicleType, @Vehicle, @Plate,
                     @ClientName, @Phone, @Notes, @Status, @Origin, @RescheduledFrom, @ClientId, @VehicleId, @ClientPlanId,
-                    @CreatedAt, @UpdatedAt, @Active)
+                    @ExtrasJson, @CreatedAt, @UpdatedAt, @Active)
             """;
         await conn.ExecuteAsync(Cmd(sql, b));
         if (_lockedDate == b.Date.Date) _lockedBookings?.Add(b);
+    }
+
+    public async Task UpdateBookingAsync(AgendaBooking b)
+    {
+        const string sql = """
+            UPDATE AgendaBookings
+               SET EndMin = @EndMin, ServiceId = @ServiceId, ServiceName = @ServiceName, Price = @Price, ExtrasJson = @ExtrasJson,
+                   VehicleType = @VehicleType, Vehicle = @Vehicle, Plate = @Plate, VehicleId = @VehicleId, ClientPlanId = @ClientPlanId,
+                   Notes = @Notes, UpdatedAt = @UpdatedAt
+             WHERE Id = @Id AND BranchId = @BranchId
+            """;
+        await conn.ExecuteAsync(Cmd(sql, b));
+        if (_lockedDate == b.Date.Date && _lockedBookings is { } cached)
+        {
+            var i = cached.FindIndex(x => x.Id == b.Id);
+            if (i >= 0) cached[i] = b;
+        }
     }
 
     public Task UpdateBookingStatusAsync(Guid id, string status, DateTime updatedAtUtc) =>

@@ -47,6 +47,13 @@ public sealed class AgendaBooking : Core
 
     /// <summary>Plano de fidelidade do cliente que cobriu este atendimento (conta no limite do mês). Nulo = cobrado à parte.</summary>
     public Guid? ClientPlanId { get; set; }
+
+    /// <summary>
+    /// Adicionais e serviços somados ao principal, como estavam no dia:
+    /// <c>[{ "id": "x1", "kind": "extra", "name": "Cera", "price": 30, "duration": 15 }]</c>.
+    /// O preço e o fim do agendamento já incluem esses itens.
+    /// </summary>
+    public string ExtrasJson { get; set; } = "[]";
 }
 
 /// <summary>
@@ -152,12 +159,15 @@ public sealed class AgendaClientVehicle : Core
     public string Color { get; set; } = string.Empty;
 }
 
-/// <summary>Outbox do lembrete de confirmação (D-1).</summary>
+/// <summary>
+/// Outbox das mensagens ao cliente: lembrete de confirmação (D-1), confirmação do agendamento feito no balcão e
+/// "seu carro está pronto" (<see cref="ReminderTypes"/>).
+/// </summary>
 public sealed class AgendaReminder : Core
 {
     public Guid BranchId { get; set; }
     public Guid BookingId { get; set; }
-    public string Type { get; set; } = "confirmation_d1";
+    public string Type { get; set; } = ReminderTypes.ConfirmationD1;
 
     /// <summary>Quando deve sair (horário local).</summary>
     public DateTime ScheduledFor { get; set; }
@@ -169,6 +179,18 @@ public sealed class AgendaReminder : Core
     public string? Answer { get; set; }
     public DateTime? AnsweredAt { get; set; }
     public string? Error { get; set; }
+}
+
+public static class ReminderTypes
+{
+    /// <summary>Lembrete na véspera com Confirmar/Remarcar/Cancelar.</summary>
+    public const string ConfirmationD1 = "confirmation_d1";
+
+    /// <summary>Confirmação logo depois de agendar pelo balcão.</summary>
+    public const string Booked = "booked";
+
+    /// <summary>"Seu carro está pronto" ao concluir o atendimento.</summary>
+    public const string Ready = "ready";
 }
 
 public static class BookingStatuses

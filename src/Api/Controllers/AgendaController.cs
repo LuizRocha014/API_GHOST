@@ -62,8 +62,20 @@ public sealed class AgendaController(IAgendaService agenda) : ControllerBase
         [FromQuery] string tipoVeiculo,
         [FromQuery] Guid? ignorarAgendamentoId,
         [FromQuery] int antecedenciaMin,
+        [FromQuery] string? adicionais,
         CancellationToken ct) =>
-        Ok(await agenda.AvailabilityAsync(branchId, data, servicoId, tipoVeiculo, ignorarAgendamentoId, antecedenciaMin, ct));
+        Ok(await agenda.AvailabilityAsync(
+            branchId, data, servicoId, tipoVeiculo, ignorarAgendamentoId, antecedenciaMin,
+            string.IsNullOrWhiteSpace(adicionais) ? null : adicionais.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
+            ct));
+
+    /// <summary>
+    /// Edita serviço, adicionais, veículo, preço ou observações (agendamento marcado ou em atendimento). Se a nova duração
+    /// não couber no mesmo horário e box, 409.
+    /// </summary>
+    [HttpPut("{branchId:guid}/agendamentos/{id:guid}")]
+    public async Task<ActionResult<BookingDto>> UpdateBooking(Guid branchId, Guid id, [FromBody] EditBookingRequest request, CancellationToken ct) =>
+        Ok(await agenda.UpdateBookingAsync(branchId, id, request, ct));
 
     /// <summary>Reserva um horário (409 se foi ocupado nesse meio tempo).</summary>
     [HttpPost("{branchId:guid}/agendamentos")]
@@ -348,18 +360,36 @@ public sealed class AgendaController(IAgendaService agenda) : ControllerBase
     public async Task<ActionResult<ReminderTemplateDto>> ReminderTemplate(Guid branchId, CancellationToken ct)
     {
         var cfg = AgendaConfigModel.Parse(await agenda.GetConfigAsync(branchId, ct));
-        var text = cfg.Texts.ReminderText;
+        return Ok(TemplateDto(BotTemplates.ReminderSpec, cfg));
+    }
+
+    /// <summary>
+    /// Os modelos a cadastrar no WhatsApp Manager (lembrete, confirmação do balcão, carro pronto), com o texto atual de
+    /// Ajustes no formato da Meta, a ordem das variáveis e os botões.
+    /// </summary>
+    [HttpGet("{branchId:guid}/bot/modelos")]
+    public async Task<ActionResult<IReadOnlyList<ReminderTemplateDto>>> MessageTemplates(Guid branchId, CancellationToken ct)
+    {
+        var cfg = AgendaConfigModel.Parse(await agenda.GetConfigAsync(branchId, ct));
+        return Ok(BotTemplates.All.Select(spec => TemplateDto(spec, cfg)).ToList());
+    }
+
+    private static ReminderTemplateDto TemplateDto(BotTemplates.Spec spec, AgendaConfigModel cfg)
+    {
+        var text = spec.Text(cfg.Texts);
         var sample = new BookingDto(
             Guid.Empty.ToString(), AgendaFormat.Date(DateTime.Today.AddDays(1)), 9 * 60, 10 * 60, cfg.Boxes.FirstOrDefault()?.Id ?? string.Empty,
             string.Empty, "Lavagem completa", 80m, "Hatch", "Onix", "ABC1D23", "Maria Silva", "5511987654321", string.Empty,
             "scheduled", "whatsapp", string.Empty, string.Empty, null, null, null, null);
-        return Ok(new ReminderTemplateDto(
-            BotTemplates.ReminderName,
+        return new ReminderTemplateDto(
+            spec.DefaultName,
             BotTemplates.DefaultLanguage,
             "UTILITY",
             BotTemplates.MetaBody(text),
             BotFormat.Variables(text),
-            BotTemplates.ReminderButtons,
-            BotTemplates.Reminder(sample, cfg).Preview));
+            spec.Buttons.Select(b => b.Title).ToList(),
+            BotTemplates.Build(spec, sample, cfg).Preview,
+            spec.Type,
+            spec.Title);
     }
 }

@@ -49,6 +49,8 @@ public sealed partial class BookingFlow(IAgendaService agenda, IBotStore store, 
         "localizacao", "que horas abre", "que horas fecha", "horario de funcionamento", "abre hoje", "aberto hoje",
         "forma de pagamento", "formas de pagamento", "aceita pix", "aceita cartao",
     ];
+    /// <summary>Saudação fora do fluxo de agendamento (vendo os horários marcados) volta ao menu.</summary>
+    private static readonly HashSet<string> Greetings = ["oi", "oie", "ola", "opa", "bom dia", "boa tarde", "boa noite", "e ai", "eai"];
     private static readonly HashSet<string> Yes = ["sim", "ok", "confirmar", "confirmo", "pode", "pode confirmar", "s"];
     private static readonly HashSet<string> No = ["nao", "n", "voltar", "manter"];
     private static readonly HashSet<string> UnderstoodKinds = ["text", "interactive", "button"];
@@ -138,6 +140,21 @@ public sealed partial class BookingFlow(IAgendaService agenda, IBotStore store, 
         if (CmdOptOut.Contains(cmd)) { await SetReminderOptInAsync(ctx, false); return; }
         if (CmdOptIn.Contains(cmd)) { await SetReminderOptInAsync(ctx, true); return; }
 
+        // Serviço tocado numa lista antiga (o WhatsApp mantém as listas clicáveis): começa um agendamento com ele.
+        if (ctx.Msg.SelectionId?.StartsWith("svc:", StringComparison.Ordinal) == true && s.State is not (BotStates.ChoosingService or BotStates.WithAttendant))
+        {
+            s.Reset();
+            s.State = BotStates.ChoosingService;
+            await OnServiceAsync(ctx);
+            return;
+        }
+        if (Greetings.Contains(cmd) && s.State is BotStates.MyBookings or BotStates.BookingAction)
+        {
+            s.Reset();
+            await AskServiceAsync(ctx);
+            return;
+        }
+
         switch (s.State)
         {
             case BotStates.WithAttendant: return; // a equipe responde pela caixa de entrada
@@ -150,9 +167,8 @@ public sealed partial class BookingFlow(IAgendaService agenda, IBotStore store, 
             case BotStates.Confirming: await OnConfirmAsync(ctx); return;
             case BotStates.MyBookings: await OnMyBookingsAsync(ctx); return;
             case BotStates.BookingAction: await OnBookingActionAsync(ctx); return;
+            case BotStates.ChoosingExtras: await OnExtrasAsync(ctx); return;
             default:
-                // Serviço tocado numa lista antiga (o WhatsApp mantém as listas clicáveis): segue com ele.
-                if (ctx.Msg.SelectionId?.StartsWith("svc:", StringComparison.Ordinal) == true) { await OnServiceAsync(ctx); return; }
                 if (InfoKeywords.Any(k => cmd.Contains(k, StringComparison.Ordinal)))
                 {
                     await SendInfoAsync(ctx);
@@ -278,7 +294,7 @@ public sealed partial class BookingFlow(IAgendaService agenda, IBotStore store, 
         s.Vehicle = v.Vehicle;
         s.Plate = v.Plate;
         s.InvalidCount = 0;
-        await AskDayAsync(ctx);
+        await AskExtrasOrDayAsync(ctx);
     }
 
     private async Task AskVehicleTypeAsync(Ctx ctx)
@@ -290,7 +306,7 @@ public sealed partial class BookingFlow(IAgendaService agenda, IBotStore store, 
         {
             // Só um tipo atendido: não pergunta.
             ctx.S.VehicleType = types[0];
-            await AskDayAsync(ctx);
+            await AskExtrasOrDayAsync(ctx);
             return;
         }
         ctx.S.State = BotStates.ChoosingVehicleType;
@@ -318,7 +334,75 @@ public sealed partial class BookingFlow(IAgendaService agenda, IBotStore store, 
         ctx.S.VehicleType = vt;
         ctx.S.VehicleId = null;
         ctx.S.InvalidCount = 0;
-        await AskDayAsync(ctx);
+        await AskExtrasOrDayAsync(ctx);
+    }
+
+    /* ---------- Adicionais ---------- */
+
+    private const int MaxBotExtras = 3;
+
+    /// <summary>Adicionais ativos do catálogo que ainda dá para escolher.</summary>
+    private static List<ExtraModel> RemainingExtras(Ctx ctx) =>
+        ctx.Cfg.Extras.Where(x => x.Active && !ctx.S.ExtraIds.Contains(x.Id)).ToList();
+
+    private Task AskExtrasOrDayAsync(Ctx ctx) =>
+        ctx.Cfg.Bot.OfferExtras && ctx.S.RescheduleOf is null && ctx.S.ExtraIds.Count < MaxBotExtras && RemainingExtras(ctx).Count > 0
+            ? AskExtrasAsync(ctx)
+            : AskDayAsync(ctx);
+
+    private async Task AskExtrasAsync(Ctx ctx)
+    {
+        var s = ctx.S;
+        var vt = s.VehicleType ?? "Hatch";
+        var rows = RemainingExtras(ctx).Take(CloudLimits.ListRows - 1).Select(x =>
+        {
+            var price = x.PriceFor(vt);
+            var minutes = x.DurationFor(vt);
+            var desc = string.Join(" · ", new[]
+            {
+                minutes > 0 ? $"+{BotFormat.Duration(minutes)}" : string.Empty,
+                ctx.Cfg.Bot.ShowPrices && price is not null ? $"+{BotFormat.Money(price)}" : string.Empty,
+            }.Where(p => p.Length > 0));
+            return new BotOption($"ext:{x.Id}", BotFormat.Truncate(x.Name, 24), desc.Length == 0 ? null : desc);
+        }).ToList();
+        var chosen = ChosenExtras(ctx);
+        rows.Add(chosen.Count == 0
+            ? new BotOption("ext:done", "Sem adicionais", "seguir para a escolha do dia")
+            : new BotOption("ext:done", "Pronto, escolher o dia", "seguir sem mais adicionais"));
+        s.State = BotStates.ChoosingExtras;
+        var body = chosen.Count == 0
+            ? "Quer incluir algum adicional no serviço?"
+            : $"Incluído: *{string.Join(", ", chosen.Select(x => x.Name))}*.\n\nMais algum?";
+        await ListAsync(ctx, new ListMessage(body, "Ver adicionais", [new BotListSection("Adicionais", rows)]));
+    }
+
+    private async Task OnExtrasAsync(Ctx ctx)
+    {
+        var s = ctx.S;
+        var t = BotFormat.Normalize(ctx.Msg.Text);
+        var id = No.Contains(t) || t is "sem" or "nenhum" or "pronto" or "so isso" ? "ext:done" : Selected(ctx);
+        if (id == "ext:done") { s.InvalidCount = 0; await AskDayAsync(ctx); return; }
+        var extra = id is not null && id.StartsWith("ext:", StringComparison.Ordinal) ? ctx.Cfg.ExtraById(id[4..]) : null;
+        if (extra is not { Active: true }) { await InvalidAsync(ctx); return; }
+        if (!s.ExtraIds.Contains(extra.Id)) s.ExtraIds.Add(extra.Id);
+        s.InvalidCount = 0;
+        await AskExtrasOrDayAsync(ctx);
+    }
+
+    /// <summary>Adicionais escolhidos (do catálogo ou, numa remarcação, também serviços somados no balcão).</summary>
+    private static List<BookingExtraDto> ChosenExtras(Ctx ctx)
+    {
+        var svc = Service(ctx);
+        return svc is null || ctx.S.ExtraIds.Count == 0
+            ? []
+            : BookingExtras.Resolve(ctx.Cfg, svc, ctx.S.VehicleType ?? "Hatch", ctx.S.ExtraIds, skipMissing: true);
+    }
+
+    /// <summary>Tempo e preço dos adicionais escolhidos no tipo de veículo.</summary>
+    private static (int Minutes, decimal Price, bool AnyPrice) ExtrasCost(Ctx ctx, string vt)
+    {
+        var chosen = ChosenExtras(ctx);
+        return (BookingExtras.Duration(chosen), BookingExtras.Price(chosen), chosen.Any(x => x.Price is not null));
     }
 
     private async Task AskDayAsync(Ctx ctx, string intro = "")
@@ -349,7 +433,7 @@ public sealed partial class BookingFlow(IAgendaService agenda, IBotStore store, 
             rows.Add(new BotOption($"day:{d}", title, $"{free} · a partir das {BotFormat.Hm(slots[0].Start)}"));
         }
 
-        var duration = BotFormat.Duration(svc.DurationFor(vt));
+        var duration = BotFormat.Duration(svc.DurationFor(vt) + ExtrasCost(ctx, vt).Minutes);
         if (rows.Count == 0)
         {
             s.Reset();
@@ -458,20 +542,29 @@ public sealed partial class BookingFlow(IAgendaService agenda, IBotStore store, 
         var vt = s.VehicleType;
         if (svc is null || vt is null || s.Date is null || s.SlotStart is null) { await AskServiceAsync(ctx); return; }
         s.State = BotStates.Confirming;
-        var duration = svc.DurationFor(vt);
-        var price = svc.PriceFor(vt);
+        var extras = ExtrasCost(ctx, vt);
+        var duration = svc.DurationFor(vt) + extras.Minutes;
+        var main = svc.PriceFor(vt);
+        decimal? price = main is null && !extras.AnyPrice ? null : (main ?? 0m) + extras.Price;
         var vehicle = VehicleTitle(s.Vehicle, s.Plate);
         var lines = new List<string>
         {
             s.RescheduleOf is not null ? "*Novo horário*" : "*Resumo do agendamento*",
             $"🚗 {svc.Name} ({ctx.Cfg.VehicleLabel(vt)})",
-            $"📅 {BotFormat.DayLong(s.Date)}",
-            $"🕘 {BotFormat.Hm(s.SlotStart.Value)} às {BotFormat.Hm(s.SlotStart.Value + duration)}",
         };
+        var chosen = ChosenExtras(ctx);
+        if (chosen.Count > 0) lines.Add($"➕ {string.Join(", ", chosen.Select(x => x.Name))}");
+        lines.Add($"📅 {BotFormat.DayLong(s.Date)}");
+        lines.Add($"🕘 {BotFormat.Hm(s.SlotStart.Value)} às {BotFormat.Hm(s.SlotStart.Value + duration)}");
         if (vehicle.Length > 0) lines.Add($"🔖 {vehicle}");
 
         var plan = await PlanLineAsync(ctx, svc, vt, s.Date);
-        if (plan.Covered) lines.Add(plan.Line!);
+        if (plan.Covered)
+        {
+            lines.Add(plan.Line!);
+            // O plano cobre o serviço; os adicionais são cobrados à parte.
+            if (extras.Price > 0 && ctx.Cfg.Bot.ShowPrices) lines.Add($"💰 Adicionais: {BotFormat.Money(extras.Price)}");
+        }
         else
         {
             if (price is not null && ctx.Cfg.Bot.ShowPrices) lines.Add($"💰 {BotFormat.Money(price)}");
@@ -555,6 +648,7 @@ public sealed partial class BookingFlow(IAgendaService agenda, IBotStore store, 
                     ReminderOptIn = optIn,
                     ClientId = client?.Id,
                     VehicleId = client is null ? null : s.VehicleId,
+                    ExtraIds = s.ExtraIds.ToList(),
                 }, ctx.Ct);
                 if (optIn)
                     tail = "\n\nVocê vai receber um lembrete na véspera para confirmar. Se não quiser lembretes, responda *parar lembretes*.";
@@ -748,6 +842,8 @@ public sealed partial class BookingFlow(IAgendaService agenda, IBotStore store, 
         s.Vehicle = b.Vehicle;
         s.Plate = b.Plate;
         s.VehicleId = b.VehicleId;
+        // Os adicionais vão junto com o horário; a busca de horários livres precisa do tempo deles.
+        s.ExtraIds = (b.Extras ?? []).Select(x => x.Id).ToList();
         s.RescheduleOf = b.Id;
         await AskDayAsync(ctx, $"Sem problema! Seu horário atual ({when}) continua reservado até você escolher o novo.\n\n");
     }
@@ -887,6 +983,7 @@ public sealed partial class BookingFlow(IAgendaService agenda, IBotStore store, 
             BotStates.AskingVehicle => AskVehicleAsync(ctx),
             BotStates.Confirming => AskConfirmAsync(ctx),
             BotStates.MyBookings or BotStates.BookingAction => ShowMyBookingsAsync(ctx),
+            BotStates.ChoosingExtras => AskExtrasAsync(ctx),
             _ => AskServiceAsync(ctx, greet: false),
         });
         s.InvalidCount = invalid; // reabrir a lista não zera a contagem de erros
@@ -978,6 +1075,7 @@ public sealed partial class BookingFlow(IAgendaService agenda, IBotStore store, 
             ctx.S.VehicleType ?? "Hatch",
             Guid.TryParse(ctx.S.RescheduleOf, out var ignore) ? ignore : null,
             ctx.Cfg.Bot.MinNoticeMin,
+            ctx.S.ExtraIds,
             ctx.Ct);
 
     private static string DescribeService(ServiceModel sv, AgendaConfigModel cfg)

@@ -29,7 +29,17 @@ public sealed class WhatsAppOptions
     public List<WhatsAppNumber> Numbers { get; set; } = [];
 
     public string ReminderTemplate { get; set; } = Application.Bot.BotTemplates.ReminderName;
+    public string BookedTemplate { get; set; } = Application.Bot.BotTemplates.BookedName;
+    public string ReadyTemplate { get; set; } = Application.Bot.BotTemplates.ReadyName;
     public string TemplateLanguage { get; set; } = Application.Bot.BotTemplates.DefaultLanguage;
+
+    /// <summary>Nome do modelo aprovado na Meta para cada tipo de mensagem da fila.</summary>
+    public string TemplateNameFor(Application.Bot.BotTemplates.Spec spec) => spec.Type switch
+    {
+        Domain.Agenda.ReminderTypes.Booked => BookedTemplate,
+        Domain.Agenda.ReminderTypes.Ready => ReadyTemplate,
+        _ => ReminderTemplate,
+    };
 
     /// <summary>Dias que a conversa fica guardada (LGPD: retenção mínima necessária).</summary>
     public int RetentionDays { get; set; } = 90;

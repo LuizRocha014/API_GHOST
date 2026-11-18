@@ -17,6 +17,8 @@ O que o cliente consegue fazer sozinho:
 
 - **Agendar**: serviço → veículo → dia → horário → resumo → confirmar. Cliente cadastrado escolhe um dos **carros
   dele** ("Civic · CAR1A11") e o bot não pergunta tipo, modelo nem placa; a reserva vai ligada ao cliente e ao carro.
+- **Adicionais**: depois do veículo, o bot oferece os adicionais ativos (cera, aromatização…) um a um, até 3, com
+  "Sem adicionais"/"Pronto". O resumo mostra os adicionais, o tempo e o preço somados (`bot.offerExtras` desliga).
 - **Plano de fidelidade**: o resumo mostra "Incluso no seu plano *Ouro* (2º de 4 em novembro)" ou avisa que o plano
   já usou as vezes do mês e o horário sai pelo preço normal. Quem aplica o plano continua sendo a reserva.
 - **Meus agendamentos**: lista os próximos horários (inclusive os marcados no balcão para o cliente) e, em cada um,
@@ -171,11 +173,17 @@ Isto é feito por você, com a conta do Facebook da estética. Leva de minutos (
    `https://<endereço do túnel>/api/whatsapp/webhook`, token de verificação = o seu `VerifyToken`. Clique em
    **Verificar e salvar** e assine o campo **messages**. O endereço do túnel rápido muda a cada execução; para algo fixo,
    use um túnel nomeado ou publique a API (ver abaixo).
-6. **Template do lembrete:** abra `GET api/agenda/{filial}/bot/modelo-lembrete`, e no **WhatsApp Manager → Modelos de
-   mensagem** crie o modelo com o **nome**, a categoria **Utilidade**, o idioma **Português (BR)**, o **corpo** exatamente
-   como veio no campo `texto` (com `{{1}}`, `{{2}}`…; a Meta pede um exemplo para cada variável) e três botões de
-   **resposta rápida**: Confirmar, Remarcar e Cancelar, nessa ordem. Espere a aprovação. Se mudar o texto do lembrete
-   nos Ajustes, o template precisa ser editado e aprovado de novo (a ordem das variáveis tem que bater).
+6. **Modelos (templates):** abra `GET api/agenda/{filial}/bot/modelos` (ou o cartão de cada mensagem em Ajustes), e no
+   **WhatsApp Manager → Modelos de mensagem** crie cada modelo com o **nome**, a categoria **Utilidade**, o idioma
+   **Português (BR)**, o **corpo** exatamente como veio no campo `texto` (com `{{1}}`, `{{2}}`…; a Meta pede um exemplo
+   para cada variável) e os botões de **resposta rápida** do campo `botoes`, nessa ordem:
+   - `lembrete_confirmacao` (lembrete na véspera): Confirmar, Remarcar, Cancelar;
+   - `agendamento_confirmado` (confirmação do balcão, se ligar em Ajustes): Remarcar, Cancelar;
+   - `carro_pronto` (se ligar em Ajustes): sem botões.
+
+   Espere a aprovação. Se mudar um texto nos Ajustes, o modelo precisa ser editado e aprovado de novo (a ordem das
+   variáveis tem que bater). Os nomes podem ser trocados em `WhatsApp:ReminderTemplate`, `WhatsApp:BookedTemplate` e
+   `WhatsApp:ReadyTemplate`.
 7. Configure as chaves (seção acima), troque `Mode` para `Cloud`, reinicie a API e mande "oi" do seu celular para o
    número.
 8. **Número próprio:** para atender clientes de verdade, adicione o número da estética na conta do WhatsApp Business

@@ -144,7 +144,7 @@ public static partial class BotFormat
         {
             ["nome"] = name.Length == 0 ? "cliente" : name,
             ["estetica"] = businessName,
-            ["servico"] = b.ServiceName,
+            ["servico"] = BookingExtras.Title(b.ServiceName, b.Extras ?? []),
             ["data"] = DayLabel(b.Date),
             ["hora"] = Hm(b.Start),
             ["fim"] = Hm(b.End),

@@ -22,6 +22,9 @@ public static class BotStates
 
     /// <summary>Um horário escolhido: remarcar, cancelar (e a confirmação do cancelamento) ou voltar.</summary>
     public const string BookingAction = "bookingAction";
+
+    /// <summary>Escolhendo adicionais (cera, aromatização) antes do dia.</summary>
+    public const string ChoosingExtras = "choosingExtras";
 }
 
 /// <summary>Conversa em andamento com um número: passo atual e o que já foi escolhido.</summary>
@@ -40,6 +43,9 @@ public sealed class BotSession
 
     /// <summary>Carro cadastrado escolhido (vai na reserva para ligar ao cliente e ao plano).</summary>
     public string? VehicleId { get; set; }
+
+    /// <summary>Adicionais escolhidos (ids do catálogo).</summary>
+    public List<string> ExtraIds { get; set; } = [];
 
     /// <summary>Agendamento sendo remarcado (o antigo só sai quando o novo é reservado).</summary>
     public string? RescheduleOf { get; set; }
@@ -60,6 +66,7 @@ public sealed class BotSession
         Vehicle = null;
         Plate = null;
         VehicleId = null;
+        ExtraIds = [];
         RescheduleOf = null;
         Options = [];
         InvalidCount = 0;

@@ -249,6 +249,7 @@ public sealed class AppDbContext : DbContext
             e.Property(x => x.Notes).HasMaxLength(AgendaService.MaxNotesLength);
             e.Property(x => x.Status).HasMaxLength(16);
             e.Property(x => x.Origin).HasMaxLength(16);
+            e.Property(x => x.ExtrasJson).HasColumnType("nvarchar(max)").HasDefaultValue("[]");
             e.Property(x => x.CreatedAt).HasColumnType("datetime2");
             e.Property(x => x.UpdatedAt).HasColumnType("datetime2");
             // A reserva trava os agendamentos do dia da filial (UPDLOCK, HOLDLOCK): o índice faz o lock pegar só o dia.
