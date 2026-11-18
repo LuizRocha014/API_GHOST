@@ -7,7 +7,7 @@ namespace Api.Controllers;
 /// <summary>Cadastro de filiais.</summary>
 [ApiController]
 [Route("api/[controller]")]
-[Authorize]
+[Authorize(Roles = Domain.Entities.UserRoles.Owner)]
 public sealed class BranchesController : ControllerBase
 {
     private readonly IBranchService _branches;

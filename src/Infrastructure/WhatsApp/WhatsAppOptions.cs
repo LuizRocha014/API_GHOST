@@ -31,6 +31,17 @@ public sealed class WhatsAppOptions
     public string ReminderTemplate { get; set; } = Application.Bot.BotTemplates.ReminderName;
     public string BookedTemplate { get; set; } = Application.Bot.BotTemplates.BookedName;
     public string ReadyTemplate { get; set; } = Application.Bot.BotTemplates.ReadyName;
+    public string ReviewTemplate { get; set; } = Application.Bot.BotTemplates.ReviewName;
+    public string PlanDueTemplate { get; set; } = Application.Bot.BotTemplates.PlanDueName;
+    public string PlanOverdueTemplate { get; set; } = Application.Bot.BotTemplates.PlanOverdueName;
+    public string WaitlistTemplate { get; set; } = Application.Bot.BotTemplates.WaitlistName;
+
+    public string TemplateNameFor(Application.Bot.BotTemplates.PlanSpec spec) => spec.Type switch
+    {
+        Domain.Agenda.PlanNoticeTypes.Overdue => PlanOverdueTemplate,
+        Application.Bot.BotTemplates.WaitlistType => WaitlistTemplate,
+        _ => PlanDueTemplate,
+    };
     public string TemplateLanguage { get; set; } = Application.Bot.BotTemplates.DefaultLanguage;
 
     /// <summary>Nome do modelo aprovado na Meta para cada tipo de mensagem da fila.</summary>
@@ -38,6 +49,7 @@ public sealed class WhatsAppOptions
     {
         Domain.Agenda.ReminderTypes.Booked => BookedTemplate,
         Domain.Agenda.ReminderTypes.Ready => ReadyTemplate,
+        Domain.Agenda.ReminderTypes.Review => ReviewTemplate,
         _ => ReminderTemplate,
     };
 

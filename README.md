@@ -108,10 +108,25 @@ servidor em UTC.
 
 O cliente agenda sozinho pelo WhatsApp (serviço, tipo do veículo, dia, horário, placa) e responde o lembrete com
 Confirmar, Remarcar ou Cancelar. Webhook em `api/whatsapp/webhook` (assinatura `X-Hub-Signature-256` conferida), fila
-em memória e o `BotWorker` processando; sessão, ids já processados e conversa ficam nas tabelas `BotSessions`,
+persistente no banco (`BotQueueItems`) e o `BotWorker` processando; sessão, ids já processados e conversa ficam nas tabelas `BotSessions`,
 `BotProcessedMessages` e `BotMessages`. Sem WhatsApp, `POST api/agenda/{filial}/bot/mensagens` conversa com o bot pela
 API. O cliente também vê, remarca e cancela os horários dele, escolhe um carro cadastrado, vê o plano de fidelidade e
 pede endereço e preços; a equipe responde pela caixa de entrada (`api/agenda/{filial}/bot/conversas`). Configuração, passo a passo da Meta, túnel para desenvolvimento e limitações: [`docs/whatsapp-bot.md`](docs/whatsapp-bot.md).
+
+### O que mais a agenda faz
+
+- **Equipe e perfis:** dono e equipe (`Role` no JWT); a equipe não vê relatórios nem exclui. Senha provisória obrigada a
+  trocar, bloqueio de 15 min depois de 5 erros e limite de tentativas por endereço. Perdeu a senha do dono:
+  `dotnet Api.dll redefinir-senha <login>`.
+- **Tempo real:** `GET {filial}/mudancas?desde=` (long-poll) avisa o app do que mudou (agendamento, conversa, ajustes).
+- **Pagamento e relatórios:** `POST agendamentos/{id}/pagamento` (forma, desconto, valor), histórico de cada agendamento
+  (`historico`), `relatorios` (recebido, a receber, ticket médio, faltas, por serviço/box/forma, melhores clientes,
+  planos e avaliações) e `relatorios/planilha` (TSV para colar no Excel).
+- **Planos de fidelidade:** mensalidade com dia de vencimento, tolerância, suspensão e aviso pelo WhatsApp.
+- **Agendamento recorrente:** `agendamentos/serie` (toda semana, a cada 2 semanas, todo mês) e `cancelar-serie`.
+- **Lista de espera, avaliação e lembrete de novo:** ver [`docs/whatsapp-bot.md`](docs/whatsapp-bot.md).
+- **App web na mesma API:** com `Web:Path` apontando para o build web do app, a API serve o site na raiz.
+- **Publicação e backup:** [`docs/deploy.md`](docs/deploy.md) (Docker com HTTPS, Azure ou PC com Cloudflare Tunnel).
 
 Para o app no celular alcançar a API pela rede, use o perfil `rede` (escuta em todas as interfaces, IPv4 e IPv6, na porta 5000):
 
@@ -132,7 +147,13 @@ folga entre atendimentos, adicionais e serviço somado, edição do agendamento 
 automáticas (confirmação do balcão e carro pronto, pela fila do lembrete), os adicionais no bot e o adicional que saiu do
 catálogo (continua no agendamento, na edição e na remarcação como foi marcado) — 59 verificações.
 
-`python infra/e2e/bot_e2e.py` faz o mesmo com o bot do WhatsApp (111 verificações: conversa completa pelo simulador,
+Outras suítes, todas contra o banco de verdade e devolvendo os ajustes originais: `equipe_e2e.py` (perfis, senha,
+bloqueio, filiais; 46), `tempo_real_e2e.py` (long-poll; 8), `financeiro_e2e.py` (pagamento, histórico, relatório e
+planilha; 28), `mensalidade_e2e.py` (vencimento, tolerância, avisos; 17), `avaliacao_serie_e2e.py` (recorrente,
+avaliação, segundo lembrete; 39), `espera_e2e.py` (lista de espera pelo bot e pelo balcão, aviso e Ver horários; 24) e
+`fila_reinicio_e2e.ps1` (mensagem do webhook sobrevive a reiniciar a API).
+
+`python infra/e2e/bot_e2e.py` faz o mesmo com o bot do WhatsApp (113 verificações: conversa completa pelo simulador,
 webhook assinado com status de entrega e botão do template, meus agendamentos, carros e plano do cliente, proteções e a
 caixa de entrada da equipe). Precisa dos segredos de desenvolvimento do WhatsApp nos
 user-secrets; ver [`docs/whatsapp-bot.md`](docs/whatsapp-bot.md).

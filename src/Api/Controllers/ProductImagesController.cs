@@ -7,7 +7,7 @@ namespace Api.Controllers;
 /// <summary>Imagens vinculadas ao produto.</summary>
 [ApiController]
 [Route("api/products/{productId:guid}/images")]
-[Authorize]
+[Authorize(Roles = Domain.Entities.UserRoles.Owner)]
 public sealed class ProductImagesController : ControllerBase
 {
     private readonly IProductImageService _images;

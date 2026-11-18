@@ -172,16 +172,108 @@ public sealed class BotStore(IConfiguration configuration) : IBotStore
     public async Task<int> PurgeAsync(DateTime processedBeforeUtc, DateTime messagesBeforeUtc, CancellationToken ct = default)
     {
         // Sessão parada há tanto tempo quanto a conversa também sai: guarda telefone e nome do cliente.
+        // Da fila: o que foi processado sai junto com os ids (7 dias); o que falhou fica até a retenção da conversa.
         const string sql = """
             DELETE FROM BotProcessedMessages WHERE ReceivedAt < @Processed;
             DECLARE @n INT = @@ROWCOUNT;
             DELETE FROM BotMessages WHERE CreatedAt < @Messages;
             SET @n = @n + @@ROWCOUNT;
             DELETE FROM BotSessions WHERE UpdatedAt < @Messages;
+            SET @n = @n + @@ROWCOUNT;
+            DELETE FROM BotQueueItems WHERE (Status = 'done' AND ReceivedAt < @Processed) OR ReceivedAt < @Messages;
             SELECT @n + @@ROWCOUNT;
             """;
         await using var conn = await OpenAsync(ct);
         return await conn.ExecuteScalarAsync<int>(new CommandDefinition(sql, new { Processed = processedBeforeUtc, Messages = messagesBeforeUtc }, cancellationToken: ct));
+    }
+
+    /* ---------- Fila do webhook ---------- */
+
+    private const string QueueColumns =
+        "Id, BranchId, Kind, ExternalId, PayloadJson, Status, Attempts, ReceivedAt, NextAttemptAt, ProcessedAt, Error";
+
+    public async Task<bool> EnqueueAsync(Domain.Agenda.BotQueueItem item, CancellationToken ct = default)
+    {
+        const string sql = $"""
+            INSERT INTO BotQueueItems ({QueueColumns})
+            SELECT @Id, @BranchId, @Kind, @ExternalId, @PayloadJson, @Status, @Attempts, @ReceivedAt, @NextAttemptAt, @ProcessedAt, @Error
+            WHERE @ExternalId IS NULL
+               OR NOT EXISTS (SELECT 1 FROM BotQueueItems WITH (UPDLOCK, HOLDLOCK) WHERE ExternalId = @ExternalId)
+            """;
+        var args = new DynamicParameters(new
+        {
+            item.Id,
+            item.BranchId,
+            Kind = Cut(item.Kind, 16),
+            ExternalId = item.ExternalId is null ? null : Cut(item.ExternalId, 160),
+            item.PayloadJson,
+            item.Status,
+            item.Attempts,
+            item.ProcessedAt,
+            item.Error,
+        });
+        // datetime2: a ordem de chegada decide a ordem de processamento.
+        args.Add("ReceivedAt", item.ReceivedAt, System.Data.DbType.DateTime2);
+        args.Add("NextAttemptAt", item.NextAttemptAt, System.Data.DbType.DateTime2);
+        await using var conn = await OpenAsync(ct);
+        try
+        {
+            return await conn.ExecuteAsync(new CommandDefinition(sql, args, cancellationToken: ct)) == 1;
+        }
+        catch (SqlException ex) when (ex.Number is DuplicateKey or DuplicateIndex)
+        {
+            return false;
+        }
+    }
+
+    public async Task<Domain.Agenda.BotQueueItem?> ClaimNextAsync(DateTime nowUtc, DateTime leaseUntilUtc, CancellationToken ct = default)
+    {
+        // READPAST: com mais de um worker (duas instâncias da API), cada um pega um item diferente.
+        const string sql = """
+            WITH next AS (
+                SELECT TOP (1) * FROM BotQueueItems WITH (UPDLOCK, READPAST, ROWLOCK)
+                 WHERE Status IN ('pending', 'processing') AND NextAttemptAt <= @Now
+                 ORDER BY ReceivedAt
+            )
+            UPDATE next SET Status = 'processing', Attempts = Attempts + 1, NextAttemptAt = @LeaseUntil
+            OUTPUT inserted.Id, inserted.BranchId, inserted.Kind, inserted.ExternalId, inserted.PayloadJson, inserted.Status,
+                   inserted.Attempts, inserted.ReceivedAt, inserted.NextAttemptAt, inserted.ProcessedAt, inserted.Error;
+            """;
+        var args = new DynamicParameters();
+        args.Add("Now", nowUtc, System.Data.DbType.DateTime2);
+        args.Add("LeaseUntil", leaseUntilUtc, System.Data.DbType.DateTime2);
+        await using var conn = await OpenAsync(ct);
+        return await conn.QuerySingleOrDefaultAsync<Domain.Agenda.BotQueueItem>(new CommandDefinition(sql, args, cancellationToken: ct));
+    }
+
+    public async Task CompleteAsync(Guid id, DateTime nowUtc, CancellationToken ct = default)
+    {
+        await using var conn = await OpenAsync(ct);
+        await conn.ExecuteAsync(new CommandDefinition(
+            "UPDATE BotQueueItems SET Status = 'done', ProcessedAt = @Now, Error = NULL WHERE Id = @Id",
+            new { Id = id, Now = nowUtc }, cancellationToken: ct));
+    }
+
+    public async Task RetryLaterAsync(Guid id, string error, DateTime nextAttemptUtc, bool giveUp, CancellationToken ct = default)
+    {
+        await using var conn = await OpenAsync(ct);
+        await conn.ExecuteAsync(new CommandDefinition(
+            "UPDATE BotQueueItems SET Status = @Status, Error = @Error, NextAttemptAt = @Next WHERE Id = @Id",
+            new { Id = id, Status = giveUp ? "failed" : "pending", Error = Cut(error, 1000), Next = nextAttemptUtc }, cancellationToken: ct));
+    }
+
+    public async Task<BotQueueHealth> QueueHealthAsync(DateTime failedSinceUtc, CancellationToken ct = default)
+    {
+        const string sql = """
+            SELECT
+                (SELECT COUNT(1) FROM BotQueueItems WHERE Status IN ('pending', 'processing')) AS Pending,
+                (SELECT COUNT(1) FROM BotQueueItems WHERE Status = 'failed' AND ReceivedAt >= @Since) AS Failed,
+                (SELECT MIN(ReceivedAt) FROM BotQueueItems WHERE Status IN ('pending', 'processing')) AS OldestPendingAt
+            """;
+        await using var conn = await OpenAsync(ct);
+        var row = await conn.QuerySingleAsync<(int Pending, int Failed, DateTime? OldestPendingAt)>(
+            new CommandDefinition(sql, new { Since = failedSinceUtc }, cancellationToken: ct));
+        return new BotQueueHealth(row.Pending, row.Failed, row.OldestPendingAt);
     }
 
     private static string Cut(string s, int max) => s.Length <= max ? s : s[..max];

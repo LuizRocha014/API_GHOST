@@ -131,4 +131,25 @@ public interface IBotStore
 
     /// <summary>Apaga ids processados e mensagens antigas (LGPD: retenção). Devolve quantas linhas saíram.</summary>
     Task<int> PurgeAsync(DateTime processedBeforeUtc, DateTime messagesBeforeUtc, CancellationToken ct = default);
+
+    /* ---------- Fila do webhook (persistente) ---------- */
+
+    /// <summary>Grava o item para o worker. Falso = o mesmo id da Meta já estava na fila (webhook reenviado).</summary>
+    Task<bool> EnqueueAsync(Domain.Agenda.BotQueueItem item, CancellationToken ct = default);
+
+    /// <summary>
+    /// Pega o próximo item vencido (pendente, ou "processando" com o prazo estourado: o worker caiu no meio) e o marca como
+    /// processando até <paramref name="leaseUntilUtc"/>. Nulo se não há nada.
+    /// </summary>
+    Task<Domain.Agenda.BotQueueItem?> ClaimNextAsync(DateTime nowUtc, DateTime leaseUntilUtc, CancellationToken ct = default);
+
+    Task CompleteAsync(Guid id, DateTime nowUtc, CancellationToken ct = default);
+
+    /// <summary>Volta para a fila em <paramref name="nextAttemptUtc"/>, ou desiste (<paramref name="giveUp"/>: "failed").</summary>
+    Task RetryLaterAsync(Guid id, string error, DateTime nextAttemptUtc, bool giveUp, CancellationToken ct = default);
+
+    /// <summary>Pendentes, falhas desde <paramref name="failedSinceUtc"/> e o pendente mais antigo (para o /health).</summary>
+    Task<BotQueueHealth> QueueHealthAsync(DateTime failedSinceUtc, CancellationToken ct = default);
 }
+
+public sealed record BotQueueHealth(int Pending, int Failed, DateTime? OldestPendingAt);

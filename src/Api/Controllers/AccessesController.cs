@@ -7,7 +7,7 @@ namespace Api.Controllers;
 /// <summary>Catálogo de tipos de acesso (vínculo com usuário e filial).</summary>
 [ApiController]
 [Route("api/[controller]")]
-[Authorize]
+[Authorize(Roles = Domain.Entities.UserRoles.Owner)]
 public sealed class AccessesController : ControllerBase
 {
     private readonly IAccessService _accesses;

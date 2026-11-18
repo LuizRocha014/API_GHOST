@@ -11,6 +11,9 @@ namespace Infrastructure.Security;
 
 public sealed class JwtTokenService : IJwtTokenService
 {
+    /// <summary>Token de quem ainda está com senha provisória: só serve para trocar a senha.</summary>
+    public const string PendingPasswordClaim = "must_change_password";
+
     private readonly JwtOptions _options;
 
     public JwtTokenService(IOptions<JwtOptions> options)
@@ -28,8 +31,11 @@ public sealed class JwtTokenService : IJwtTokenService
             new(JwtRegisteredClaimNames.Email, user.Email),
             new("username", user.Username),
             new(ClaimTypes.Name, user.Name),
+            new(ClaimTypes.Role, UserRoles.IsValid(user.Role) ? user.Role : UserRoles.Owner),
             new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
         };
+        if (user.MustChangePassword)
+            claims.Add(new Claim(PendingPasswordClaim, "true"));
 
         var token = new JwtSecurityToken(
             issuer: _options.Issuer,

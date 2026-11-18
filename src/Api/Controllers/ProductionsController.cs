@@ -7,7 +7,7 @@ namespace Api.Controllers;
 /// <summary>Consulta e exclusão lógica de produções.</summary>
 [ApiController]
 [Route("api/[controller]")]
-[Authorize]
+[Authorize(Roles = Domain.Entities.UserRoles.Owner)]
 public sealed class ProductionsController : ControllerBase
 {
     private readonly IInventoryService _inventory;

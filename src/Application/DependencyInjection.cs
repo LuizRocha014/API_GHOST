@@ -29,6 +29,12 @@ public static class DependencyInjection
         services.AddScoped<IProductBatchService, ProductBatchService>();
         services.AddScoped<IUserBranchAccessService, UserBranchAccessService>();
         services.AddScoped<IAgendaService, AgendaService>();
+        services.AddScoped<TeamService>();
+        services.AddScoped<AgendaActor>();
+        services.AddScoped<ReportService>();
+        services.AddScoped<PlanBillingService>();
+        services.AddScoped<WaitlistService>();
+        services.AddSingleton<AgendaChangeFeed>();
         services.AddScoped<BookingFlow>();
         services.AddScoped<BotInboxService>();
         return services;

@@ -33,5 +33,8 @@ public sealed class AgendaClock : IAgendaClock
         }
     }
 
-    public DateTime NowLocal => DateTime.SpecifyKind(TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, _zone), DateTimeKind.Unspecified);
+    public DateTime NowLocal => ToLocal(DateTime.UtcNow);
+
+    public DateTime ToLocal(DateTime utc) =>
+        DateTime.SpecifyKind(TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(utc, DateTimeKind.Utc), _zone), DateTimeKind.Unspecified);
 }

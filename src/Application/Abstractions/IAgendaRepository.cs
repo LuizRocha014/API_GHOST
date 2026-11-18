@@ -8,7 +8,6 @@ public interface IAgendaRepository
 {
     /* ---------- Acesso ---------- */
     Task<IReadOnlyList<AgendaBranchDto>> ListBranchesForUserAsync(Guid userId, CancellationToken ct = default);
-    Task<bool> CanAccessBranchAsync(Guid userId, Guid branchId, CancellationToken ct = default);
     Task<string?> GetBranchNameAsync(Guid branchId, CancellationToken ct = default);
 
     /* ---------- Configuração ---------- */
@@ -67,6 +66,35 @@ public interface IAgendaRepository
     Task<AgendaBlock> AddBlockAsync(AgendaBlock block, CancellationToken ct = default);
     Task<bool> DeleteBlockAsync(Guid branchId, Guid id, CancellationToken ct = default);
     Task<bool> DeleteBookingAsync(Guid branchId, Guid id, CancellationToken ct = default);
+
+    /// <summary>Agendamentos da série (recorrente), na ordem das datas.</summary>
+    Task<IReadOnlyList<AgendaBooking>> ListSeriesAsync(Guid branchId, Guid seriesId, CancellationToken ct = default);
+
+    /* ---------- Avisos de mensalidade ---------- */
+    Task<IReadOnlyList<Guid>> ListBranchIdsAsync(CancellationToken ct = default);
+    Task<IReadOnlyList<AgendaPlanNotice>> ListPlanNoticesAsync(Guid branchId, DateTime month, CancellationToken ct = default);
+
+    /// <summary>Reserva o aviso (plano, mês, tipo). Falso = já foi mandado (ou outra instância está mandando).</summary>
+    Task<bool> TryInsertPlanNoticeAsync(AgendaPlanNotice notice, CancellationToken ct = default);
+    Task UpdatePlanNoticeAsync(AgendaPlanNotice notice, CancellationToken ct = default);
+
+    /* ---------- Lista de espera ---------- */
+    Task InsertWaitlistAsync(AgendaWaitlistEntry entry, CancellationToken ct = default);
+    Task UpdateWaitlistAsync(AgendaWaitlistEntry entry, CancellationToken ct = default);
+    Task<AgendaWaitlistEntry?> GetWaitlistAsync(Guid branchId, Guid id, CancellationToken ct = default);
+    Task<IReadOnlyList<AgendaWaitlistEntry>> ListWaitlistAsync(Guid branchId, DateTime from, DateTime to, CancellationToken ct = default);
+
+    /// <summary>Pedidos ainda abertos (esperando ou avisados) a partir de <paramref name="from"/>, e os de antes que ainda estão abertos.</summary>
+    Task<IReadOnlyList<AgendaWaitlistEntry>> ListOpenWaitlistAsync(Guid branchId, CancellationToken ct = default);
+
+    /// <summary>Filiais com alguém na lista de espera (o worker só olha essas).</summary>
+    Task<IReadOnlyList<Guid>> ListBranchesWithWaitlistAsync(CancellationToken ct = default);
+
+    /* ---------- Histórico ---------- */
+    Task InsertAuditAsync(AgendaAuditEntry entry, CancellationToken ct = default);
+
+    /// <summary>Histórico dos agendamentos (um ou a cadeia de remarcações), do mais antigo para o mais novo.</summary>
+    Task<IReadOnlyList<AgendaAuditEntry>> ListAuditAsync(Guid branchId, IReadOnlyList<Guid> bookingIds, CancellationToken ct = default);
     Task<int> PruneBookingsAsync(Guid branchId, DateTime before, CancellationToken ct = default);
 
     /// <summary>
@@ -93,6 +121,14 @@ public interface IAgendaDayTransaction
 
     /// <summary>Grava a edição: fim, serviço, adicionais, preço, veículo, plano e observações.</summary>
     Task UpdateBookingAsync(AgendaBooking booking);
+
+    /// <summary>Grava desconto e pagamento (forma, valor, quando).</summary>
+    Task UpdateBookingPaymentAsync(AgendaBooking booking);
+
+    Task InsertAuditAsync(AgendaAuditEntry entry);
+
+    /// <summary>Grava a avaliação do cliente.</summary>
+    Task UpdateBookingRatingAsync(AgendaBooking booking);
 
     Task<AgendaClient?> GetClientAsync(IReadOnlyList<string> phoneVariants);
     Task<AgendaClient?> GetClientByIdAsync(Guid id);
@@ -146,8 +182,18 @@ public interface IReminderSender
     Task<string> SendAsync(string type, AgendaBooking booking, AgendaConfigModel config, CancellationToken ct = default);
 }
 
+/// <summary>Envio do aviso de mensalidade (modelo da Meta). Devolve o id da mensagem.</summary>
+public interface IPlanNoticeSender
+{
+    Task<string> SendAsync(
+        string type, Guid branchId, string phone, IReadOnlyDictionary<string, string> values, AgendaConfigModel config, CancellationToken ct = default);
+}
+
 /// <summary>Relógio no fuso da estética (as datas da agenda são locais).</summary>
 public interface IAgendaClock
 {
     DateTime NowLocal { get; }
+
+    /// <summary>Instante UTC no fuso da estética.</summary>
+    DateTime ToLocal(DateTime utc);
 }

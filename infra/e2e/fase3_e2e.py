@@ -289,7 +289,9 @@ try:
     check("com a confirmação desligada, não entra na fila",
           not [x for x in rems or [] if x["bookingId"] == m2["id"] and x["type"] == "booked"])
     s, tpls = call("GET", A + "/bot/modelos", token=tok)
-    check("três modelos para a Meta", s == 200 and [t["nome"] for t in tpls] == ["lembrete_confirmacao", "agendamento_confirmado", "carro_pronto"]
+    check("modelos para a Meta (agendamento + mensalidade)", s == 200 and [t["nome"] for t in tpls] == [
+              "lembrete_confirmacao", "agendamento_confirmado", "carro_pronto", "avaliacao_atendimento", "mensalidade_vencendo",
+              "mensalidade_atrasada", "vaga_disponivel"]
           and all("{{1}}" in t["texto"] for t in tpls), [t.get("nome") for t in tpls or []])
 
     # ---- R4 no bot: adicionais

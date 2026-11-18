@@ -7,7 +7,7 @@ namespace Api.Controllers;
 /// <summary>Cadastro de produtos.</summary>
 [ApiController]
 [Route("api/[controller]")]
-[Authorize]
+[Authorize(Roles = Domain.Entities.UserRoles.Owner)]
 public sealed class ProductsController : ControllerBase
 {
     private readonly IProductService _productService;

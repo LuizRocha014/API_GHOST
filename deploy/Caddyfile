@@ -1,0 +1,17 @@
+# HTTPS automático (Let's Encrypt) para o domínio do .env, repassando tudo para a API.
+# A API serve o app web na raiz, a API em /api e o webhook do WhatsApp em /api/whatsapp/webhook.
+{$DOMINIO} {
+	encode zstd gzip
+	reverse_proxy api:8080 {
+		# Long-poll do app (/mudancas) segura a conexão por até 30 s.
+		transport http {
+			read_timeout 60s
+		}
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+}

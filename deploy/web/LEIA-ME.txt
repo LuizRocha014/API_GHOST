@@ -1,0 +1,6 @@
+Pasta do app web (Flutter) que a API serve na raiz do site.
+
+Gere com ..\publicar-web.ps1 (faz o build do app e copia para cá) ou copie à mão o conteúdo de
+agenda_estetica\app\build\web para esta pasta. O compose monta esta pasta em /app/web (Web:Path).
+
+Sem index.html aqui, só a API responde (o app de celular continua funcionando).

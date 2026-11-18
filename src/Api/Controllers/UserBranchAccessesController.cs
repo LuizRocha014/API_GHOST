@@ -6,7 +6,7 @@ namespace Api.Controllers;
 
 /// <summary>Acessos do usuário por filial e empresa.</summary>
 [ApiController]
-[Authorize]
+[Authorize(Roles = Domain.Entities.UserRoles.Owner)]
 [Route("api/users/{userId:guid}/branch-accesses")]
 public sealed class UserBranchAccessesController : ControllerBase
 {

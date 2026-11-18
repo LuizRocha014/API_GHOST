@@ -7,7 +7,8 @@ namespace Api.Agenda;
 /// (padrão 60 s). Liga e desliga por <c>Agenda:ReminderWorker:Enabled</c>. Sem WhatsApp configurado, o envio
 /// só fica registrado no log (ver <c>LocalReminderSender</c>).
 /// </summary>
-public sealed class ReminderWorker(IServiceScopeFactory scopes, IConfiguration configuration, ILogger<ReminderWorker> logger)
+public sealed class ReminderWorker(
+    IServiceScopeFactory scopes, AgendaChangeFeed feed, IConfiguration configuration, ILogger<ReminderWorker> logger)
     : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -44,7 +45,10 @@ public sealed class ReminderWorker(IServiceScopeFactory scopes, IConfiguration c
                 var result = await scope.ServiceProvider.GetRequiredService<IAgendaService>()
                     .DispatchRemindersAsync(branchId, new DispatchRequest(), ct);
                 if (result.Count > 0)
+                {
                     logger.LogInformation("Lembretes: {Count} processado(s) na filial {BranchId}.", result.Count, branchId);
+                    feed.Publish(branchId, AgendaChangeFeed.Reminders, AgendaChangeFeed.Inbox);
+                }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {

@@ -1,0 +1,81 @@
+# Agenda da Estética num servidor (VPS) com Docker: banco SQL Server, API (que também serve o app web) e HTTPS
+# automático pelo Caddy (Let's Encrypt).
+#
+#   1. Copie .env.example para .env e preencha (senhas fortes, domínio).
+#   2. Gere o app web:  ./publicar-web.ps1   (ou copie o build/web do app para a pasta deploy/web)
+#   3. docker compose up -d --build
+#
+# Passo a passo completo em docs/deploy.md.
+
+name: agenda-estetica
+
+services:
+  db:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    restart: unless-stopped
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: Express
+      MSSQL_SA_PASSWORD: ${SQL_SENHA:?defina SQL_SENHA no .env}
+      TZ: America/Sao_Paulo
+    volumes:
+      - sqldata:/var/opt/mssql
+      # Backups (backup/backup-docker.sh grava aqui): fica no disco do servidor, fora do container.
+      - ./backups:/var/opt/mssql/backup
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -Q 'SELECT 1' -b -o /dev/null"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 40s
+
+  api:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      TZ: America/Sao_Paulo
+      Database__Target: Express
+      ConnectionStrings__Express: "Server=db,1433;Database=AgendaGhost;User Id=sa;Password=${SQL_SENHA};TrustServerCertificate=True;MultipleActiveResultSets=true;Application Name=API_GHOST"
+      Jwt__Key: ${JWT_CHAVE:?defina JWT_CHAVE no .env (64 caracteres aleatórios)}
+      # O HTTPS termina no Caddy: a API confia no X-Forwarded-For/Proto dele.
+      Proxy__Forwarded: "true"
+      Web__Path: /app/web
+      Seed__DemoData: "false"
+      Seed__Empresa: ${EMPRESA:-Minha estética}
+      Seed__Filial: ${FILIAL:-Matriz}
+      WhatsApp__Mode: ${WHATSAPP_MODO:-Log}
+      WhatsApp__AccessToken: ${WHATSAPP_TOKEN:-}
+      WhatsApp__AppSecret: ${WHATSAPP_APP_SECRET:-}
+      WhatsApp__VerifyToken: ${WHATSAPP_VERIFY_TOKEN:-}
+      WhatsApp__Numbers__0__PhoneNumberId: ${WHATSAPP_PHONE_NUMBER_ID:-}
+      WhatsApp__Numbers__0__BranchId: ${WHATSAPP_FILIAL_ID:-00000000-0000-0000-0000-000000000000}
+    volumes:
+      - ./web:/app/web:ro
+    expose:
+      - "8080"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMINIO: ${DOMINIO:?defina DOMINIO no .env (ex.: agenda.suaestetica.com.br)}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  sqldata:
+  caddy_data:
+  caddy_config:

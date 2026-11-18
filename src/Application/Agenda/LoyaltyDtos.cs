@@ -35,7 +35,8 @@ public sealed class LoyaltyPlanRequest
 }
 
 /// <summary>Mensalidade de um mês do plano: <c>Status</c> "paid" ou "pending"; paga guarda o valor e quando ('AAAA-MM-DDTHH:mm').</summary>
-public sealed record PlanChargeDto(string Month, decimal Amount, string Status, string? PaidAt);
+/// <summary>Mensalidade do mês. <c>DueDate</c>: vencimento ('AAAA-MM-DD'); <c>Overdue</c>: pendente depois da tolerância.</summary>
+public sealed record PlanChargeDto(string Month, decimal Amount, string Status, string? PaidAt, string? DueDate = null, bool Overdue = false);
 
 /// <summary>Uso de um serviço do plano no mês consultado.</summary>
 public sealed record PlanUsageDto(string ServiceId, string ServiceName, int TimesPerMonth, int Used);
@@ -59,7 +60,9 @@ public sealed record ClientPlanDto(
     string Month,
     IReadOnlyList<PlanUsageDto> Usage,
     IReadOnlyList<PlanChargeDto> Charges,
-    int UpcomingBookings);
+    int UpcomingBookings,
+    int DueDay = 0,
+    bool Suspended = false);
 
 /// <summary>
 /// Adesão do cliente a um plano. Com <c>PlanId</c>, vem do modelo (pode ter sido ajustado só para ele);
@@ -73,6 +76,9 @@ public sealed class ClientPlanRequest
     public List<PlanItemRequest>? Items { get; set; }
     public string? VehicleId { get; set; }
     public string? VehicleType { get; set; }
+
+    /// <summary>Dia do vencimento da mensalidade (1 a 28). Vazio = o dia da adesão.</summary>
+    public int? DueDay { get; set; }
 }
 
 /// <summary>Plano que cobriria um serviço num dia: <c>Used</c> de <c>TimesPerMonth</c> no mês <c>Month</c> ('AAAA-MM').</summary>

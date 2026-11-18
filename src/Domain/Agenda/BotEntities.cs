@@ -26,6 +26,48 @@ public sealed class BotProcessedMessage
     public DateTime ReceivedAt { get; set; }
 }
 
+/// <summary>
+/// Item da fila do webhook, gravado antes de responder 200 à Meta: sobrevive a queda e reinício da API. O worker pega um
+/// por vez (<see cref="Status"/> "processing" com prazo em <see cref="NextAttemptAt"/>), e o que falha volta com espera
+/// crescente até virar "failed".
+/// </summary>
+public sealed class BotQueueItem
+{
+    public Guid Id { get; set; }
+    public Guid BranchId { get; set; }
+
+    /// <summary>"message" (mensagem do cliente) ou "status" (entrega/leitura/falha de uma mensagem enviada).</summary>
+    public string Kind { get; set; } = BotQueueKinds.Message;
+
+    /// <summary>Id da Meta (message.id, ou wamid:status): o mesmo webhook reenviado não entra duas vezes.</summary>
+    public string? ExternalId { get; set; }
+    public string PayloadJson { get; set; } = "{}";
+
+    /// <summary>pending, processing, done ou failed.</summary>
+    public string Status { get; set; } = BotQueueStatuses.Pending;
+    public int Attempts { get; set; }
+    public DateTime ReceivedAt { get; set; }
+
+    /// <summary>Pendente: quando pode ser tentado. Processando: até quando o worker tem o item (depois outro pega).</summary>
+    public DateTime NextAttemptAt { get; set; }
+    public DateTime? ProcessedAt { get; set; }
+    public string? Error { get; set; }
+}
+
+public static class BotQueueKinds
+{
+    public const string Message = "message";
+    public const string Status = "status";
+}
+
+public static class BotQueueStatuses
+{
+    public const string Pending = "pending";
+    public const string Processing = "processing";
+    public const string Done = "done";
+    public const string Failed = "failed";
+}
+
 /// <summary>Mensagem trocada com o cliente (entrada e saída), para a equipe acompanhar a conversa.</summary>
 public sealed class BotMessage : Core
 {

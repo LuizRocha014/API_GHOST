@@ -19,3 +19,10 @@ Thumbs.db
 
 # Python (scripts de teste em infra/)
 __pycache__/
+
+## Publicação (deploy/): segredos, build do app web e backups ficam só no servidor
+deploy/.env
+deploy/web/*
+!deploy/web/LEIA-ME.txt
+deploy/backups/
+deploy/backup/backup.log

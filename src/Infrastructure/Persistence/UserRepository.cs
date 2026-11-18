@@ -6,6 +6,9 @@ namespace Infrastructure.Persistence;
 
 public sealed class UserRepository : IUserRepository
 {
+    private const string Columns =
+        "Id, Name, Username, Email, PasswordHash, CreatedAt, UpdatedAt, Active, Role, MustChangePassword, FailedLogins, LockedUntil, LastLoginAt";
+
     private readonly SqlSession _session;
 
     public UserRepository(SqlSession session)
@@ -15,12 +18,7 @@ public sealed class UserRepository : IUserRepository
 
     public async Task<IReadOnlyList<User>> GetAllAsync(CancellationToken cancellationToken = default)
     {
-        const string sql = """
-            SELECT Id, Name, Username, Email, PasswordHash, CreatedAt, UpdatedAt, Active
-            FROM Users
-            WHERE Active = 1
-            ORDER BY Name
-            """;
+        var sql = $"SELECT {Columns} FROM Users WHERE Active = 1 ORDER BY Name";
         var list = await _session.Connection
             .QueryAsync<User>(new CommandDefinition(sql, cancellationToken: cancellationToken))
             .ConfigureAwait(false);
@@ -29,11 +27,7 @@ public sealed class UserRepository : IUserRepository
 
     public async Task<User?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
     {
-        const string sql = """
-            SELECT Id, Name, Username, Email, PasswordHash, CreatedAt, UpdatedAt, Active
-            FROM Users
-            WHERE Id = @Id AND Active = 1
-            """;
+        var sql = $"SELECT {Columns} FROM Users WHERE Id = @Id AND Active = 1";
         return await _session.Connection
             .QuerySingleOrDefaultAsync<User>(new CommandDefinition(sql, new { Id = id }, cancellationToken: cancellationToken))
             .ConfigureAwait(false);
@@ -42,11 +36,7 @@ public sealed class UserRepository : IUserRepository
     public async Task<User?> GetByEmailAsync(string email, CancellationToken cancellationToken = default)
     {
         var normalized = email.Trim().ToLowerInvariant();
-        const string sql = """
-            SELECT Id, Name, Username, Email, PasswordHash, CreatedAt, UpdatedAt, Active
-            FROM Users
-            WHERE Email = @Email AND Active = 1
-            """;
+        var sql = $"SELECT {Columns} FROM Users WHERE Email = @Email AND Active = 1";
         return await _session.Connection
             .QuerySingleOrDefaultAsync<User>(new CommandDefinition(sql, new { Email = normalized }, cancellationToken: cancellationToken))
             .ConfigureAwait(false);
@@ -55,11 +45,7 @@ public sealed class UserRepository : IUserRepository
     public async Task<User?> GetByUsernameAsync(string username, CancellationToken cancellationToken = default)
     {
         var normalized = username.Trim().ToLowerInvariant();
-        const string sql = """
-            SELECT Id, Name, Username, Email, PasswordHash, CreatedAt, UpdatedAt, Active
-            FROM Users
-            WHERE Username = @Username AND Active = 1
-            """;
+        var sql = $"SELECT {Columns} FROM Users WHERE Username = @Username AND Active = 1";
         return await _session.Connection
             .QuerySingleOrDefaultAsync<User>(new CommandDefinition(sql, new { Username = normalized }, cancellationToken: cancellationToken))
             .ConfigureAwait(false);
@@ -97,9 +83,10 @@ public sealed class UserRepository : IUserRepository
 
     public async Task<User> AddAsync(User user, CancellationToken cancellationToken = default)
     {
-        const string sql = """
-            INSERT INTO Users (Id, Name, Username, Email, PasswordHash, CreatedAt, UpdatedAt, Active)
-            VALUES (@Id, @Name, @Username, @Email, @PasswordHash, @CreatedAt, @UpdatedAt, @Active)
+        var sql = $"""
+            INSERT INTO Users ({Columns})
+            VALUES (@Id, @Name, @Username, @Email, @PasswordHash, @CreatedAt, @UpdatedAt, @Active, @Role, @MustChangePassword,
+                    @FailedLogins, @LockedUntil, @LastLoginAt)
             """;
         await _session.Connection
             .ExecuteAsync(new CommandDefinition(sql, user, cancellationToken: cancellationToken))
@@ -119,6 +106,19 @@ public sealed class UserRepository : IUserRepository
             .ExecuteAsync(new CommandDefinition(sql, user, cancellationToken: cancellationToken))
             .ConfigureAwait(false);
         return n > 0;
+    }
+
+    public async Task UpdateSecurityAsync(User user, CancellationToken cancellationToken = default)
+    {
+        const string sql = """
+            UPDATE Users
+            SET PasswordHash = @PasswordHash, MustChangePassword = @MustChangePassword, FailedLogins = @FailedLogins,
+                LockedUntil = @LockedUntil, LastLoginAt = @LastLoginAt, UpdatedAt = @UpdatedAt
+            WHERE Id = @Id
+            """;
+        await _session.Connection
+            .ExecuteAsync(new CommandDefinition(sql, user, cancellationToken: cancellationToken))
+            .ConfigureAwait(false);
     }
 
     public async Task<bool> SoftDeleteAsync(Guid id, CancellationToken cancellationToken = default)

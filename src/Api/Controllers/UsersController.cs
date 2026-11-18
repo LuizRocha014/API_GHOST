@@ -7,7 +7,7 @@ namespace Api.Controllers;
 /// <summary>Cadastro de usuários.</summary>
 [ApiController]
 [Route("api/[controller]")]
-[Authorize]
+[Authorize(Roles = Domain.Entities.UserRoles.Owner)]
 public sealed class UsersController : ControllerBase
 {
     private readonly IUserService _users;

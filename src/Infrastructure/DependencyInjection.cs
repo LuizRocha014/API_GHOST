@@ -33,6 +33,8 @@ public static class DependencyInjection
 
         // Agenda da estética
         services.AddScoped<IAgendaRepository, AgendaRepository>();
+        services.AddScoped<ITeamRepository, TeamRepository>();
+        services.AddSingleton<HealthProbe>();
         services.AddSingleton<IAgendaClock, AgendaClock>();
 
         // Bot e WhatsApp: modo Log (padrão) não envia nada para a Meta; Cloud usa a WhatsApp Cloud API.
@@ -44,6 +46,8 @@ public static class DependencyInjection
         else
             services.AddSingleton<IMessagingChannel, LogMessagingChannel>();
         services.AddScoped<IReminderSender, WhatsAppReminderSender>();
+        services.AddScoped<IPlanNoticeSender, WhatsAppPlanNoticeSender>();
+        services.AddScoped<Application.Agenda.IWaitlistNoticeSender, WhatsAppWaitlistNoticeSender>();
         return services;
     }
 }

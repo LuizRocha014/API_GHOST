@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Api.Agenda;
+using Application.Bot;
 using Domain.Agenda;
 using Infrastructure.WhatsApp;
 using Microsoft.AspNetCore.Authorization;
@@ -17,7 +18,8 @@ namespace Api.Controllers;
 [AllowAnonymous]
 [ApiExplorerSettings(IgnoreApi = true)]
 public sealed class WhatsAppWebhookController(
-    BotQueue queue,
+    IBotStore store,
+    BotSignal signal,
     IOptions<WhatsAppOptions> options,
     IHostEnvironment environment,
     ILogger<WhatsAppWebhookController> logger) : ControllerBase
@@ -73,27 +75,39 @@ public sealed class WhatsAppWebhookController(
             return BadRequest();
         }
 
-        foreach (var m in parsed.Messages)
+        // Grava tudo na fila do banco antes do 200: se a API cair depois, nada se perde. Banco fora do ar = 503 e a Meta
+        // reenvia o webhook mais tarde (o mesmo id não entra duas vezes).
+        var now = DateTime.UtcNow;
+        var queued = 0;
+        try
         {
-            var branchId = options.Value.BranchFor(m.PhoneNumberId);
-            if (branchId is null)
+            foreach (var m in parsed.Messages)
             {
-                logger.LogWarning("Webhook: número {PhoneNumberId} sem filial em WhatsApp:Numbers; mensagem ignorada.", m.PhoneNumberId);
-                continue;
+                var branchId = options.Value.BranchFor(m.PhoneNumberId);
+                if (branchId is null)
+                {
+                    logger.LogWarning("Webhook: número {PhoneNumberId} sem filial em WhatsApp:Numbers; mensagem ignorada.", m.PhoneNumberId);
+                    continue;
+                }
+                if (await store.EnqueueAsync(BotQueuePayload.ForMessage(branchId.Value, m.Message, now), ct)) queued++;
             }
-            if (!queue.TryEnqueue(new BotWork(branchId.Value, m.Message, null)))
-                return StatusCode(StatusCodes.Status503ServiceUnavailable);
+
+            foreach (var s in parsed.Statuses)
+            {
+                // "sent" já é o estado gravado no envio; só entregue, lida e falha mudam o lembrete.
+                if (s.Status.Status is not (ReminderStatuses.Delivered or ReminderStatuses.Read or ReminderStatuses.Failed)) continue;
+                var branchId = options.Value.BranchFor(s.PhoneNumberId);
+                if (branchId is null) continue;
+                if (await store.EnqueueAsync(BotQueuePayload.ForStatus(branchId.Value, s.Status, now), ct)) queued++;
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogError(ex, "Webhook: não foi possível gravar na fila; a Meta vai reenviar.");
+            return StatusCode(StatusCodes.Status503ServiceUnavailable);
         }
 
-        foreach (var s in parsed.Statuses)
-        {
-            // "sent" já é o estado gravado no envio; só entregue, lida e falha mudam o lembrete.
-            if (s.Status.Status is not (ReminderStatuses.Delivered or ReminderStatuses.Read or ReminderStatuses.Failed)) continue;
-            var branchId = options.Value.BranchFor(s.PhoneNumberId);
-            if (branchId is null) continue;
-            if (!queue.TryEnqueue(new BotWork(branchId.Value, null, s.Status)))
-                return StatusCode(StatusCodes.Status503ServiceUnavailable);
-        }
+        if (queued > 0) signal.Ring();
         return Ok();
     }
 }

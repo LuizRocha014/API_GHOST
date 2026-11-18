@@ -19,7 +19,8 @@ namespace Application.Bot;
 /// Proteções (Bot.MaxUpcoming, Bot.NoShowLimit, cliente bloqueado) valem para agendamento novo.
 /// As regras de agenda e de plano são as do <see cref="IAgendaService"/>.
 /// </summary>
-public sealed partial class BookingFlow(IAgendaService agenda, IBotStore store, IAgendaClock clock, ILogger<BookingFlow> logger)
+public sealed partial class BookingFlow(
+    IAgendaService agenda, IBotStore store, IAgendaClock clock, WaitlistService waitlist, ILogger<BookingFlow> logger)
 {
     private const int SlotsPerPage = 8;
     private const int MaxListedBookings = 9;
@@ -129,6 +130,9 @@ public sealed partial class BookingFlow(IAgendaService agenda, IBotStore store, 
 
         // Opção tocada ou digitada que vale em qualquer passo.
         var picked = ctx.Msg.SelectionId ?? (s.Options.Count > 0 ? Selected(ctx) : null);
+        if (picked?.StartsWith("wl:", StringComparison.Ordinal) == true) { await OnWaitlistNoticeAsync(ctx, picked[3..]); return; }
+        var rating = picked is null ? null : RatingRegex().Match(picked);
+        if (rating is { Success: true }) { await OnRatingAsync(ctx, int.Parse(rating.Groups[1].Value), rating.Groups[2].Value); return; }
         var reminder = picked is null ? null : ReminderRegex().Match(picked);
         if (reminder is { Success: true }) { await OnBookingReplyAsync(ctx, reminder.Groups[1].Value, reminder.Groups[2].Value); return; }
 
@@ -434,14 +438,25 @@ public sealed partial class BookingFlow(IAgendaService agenda, IBotStore store, 
         }
 
         var duration = BotFormat.Duration(svc.DurationFor(vt) + ExtrasCost(ctx, vt).Minutes);
+        var canWait = ctx.Cfg.Notify.Waitlist && s.RescheduleOf is null && (await FullDaysAsync(ctx)).Count > 0;
         if (rows.Count == 0)
         {
+            if (canWait)
+            {
+                await ButtonsAsync(ctx, new ButtonsMessage(
+                    $"Poxa, os próximos {ctx.Cfg.Bot.DaysAhead} dias estão lotados para *{svc.Name}* ({duration}) 😕\n" +
+                    "Posso te avisar por aqui se abrir uma vaga. Quer?",
+                    [new BotOption("nav:wait", "Avisar se abrir vaga"), new BotOption("nav:attendant", "Falar com atendente")]));
+                return;
+            }
             s.Reset();
             await TextAsync(ctx,
                 $"Poxa, não encontrei horário livre para *{svc.Name}* ({duration}) nos próximos {ctx.Cfg.Bot.DaysAhead} dias 😕\n" +
                 "Digite *atendente* para a equipe ver um encaixe, ou *menu* para escolher outro serviço.");
             return;
         }
+        if (canWait && rows.Count < CloudLimits.ListRows)
+            rows.Add(new BotOption("nav:wait", "🔔 Dia lotado?", "Te aviso se abrir vaga"));
         var vehicle = s.VehicleId is not null ? VehicleTitle(s.Vehicle, s.Plate) : ctx.Cfg.VehicleLabel(vt);
         await ListAsync(ctx, new ListMessage(
             $"{intro}*{svc.Name}* · {vehicle} · {duration}\n\nEscolha o dia:",
@@ -452,11 +467,102 @@ public sealed partial class BookingFlow(IAgendaService agenda, IBotStore store, 
     private async Task OnDayAsync(Ctx ctx)
     {
         var id = Selected(ctx);
+        if (id == "nav:wait") { await AskWaitDayAsync(ctx); return; }
+        if (id == "nav:days") { await AskDayAsync(ctx); return; }
+        if (id?.StartsWith("wday:", StringComparison.Ordinal) == true) { await JoinWaitlistAsync(ctx, id[5..]); return; }
         var date = id is not null && id.StartsWith("day:", StringComparison.Ordinal) ? id[4..] : null;
         if (date is null || !IsoDateRegex().IsMatch(date) || string.CompareOrdinal(date, ctx.Today) < 0) { await InvalidAsync(ctx); return; }
         ctx.S.Date = date;
         ctx.S.SlotPage = 0;
         ctx.S.InvalidCount = 0;
+        await AskSlotAsync(ctx);
+    }
+
+    /* ---------- Lista de espera ---------- */
+
+    /// <summary>Dias abertos (dentro de "dias à frente") sem nenhum horário para o serviço: onde dá para entrar na lista de espera.</summary>
+    private async Task<IReadOnlyList<string>> FullDaysAsync(Ctx ctx)
+    {
+        var full = new List<string>();
+        var days = Math.Max(1, ctx.Cfg.Bot.DaysAhead);
+        for (var i = 0; i < days; i++)
+        {
+            var date = ctx.Now.Date.AddDays(i);
+            if (AvailabilityRules.HoursOf(ctx.Cfg, date) is not { } h) continue;
+            // Hoje, perto de fechar, não adianta esperar vaga.
+            if (i == 0 && ctx.Now.TimeOfDay.TotalMinutes >= h.End - 60) continue;
+            var d = BotFormat.Iso(date);
+            if ((await AvailabilityAsync(ctx, d)).Count == 0) full.Add(d);
+        }
+        return full;
+    }
+
+    private async Task AskWaitDayAsync(Ctx ctx)
+    {
+        var s = ctx.S;
+        var svc = Service(ctx);
+        if (svc is null || s.VehicleType is null || !ctx.Cfg.Notify.Waitlist) { await AskServiceAsync(ctx); return; }
+        var full = await FullDaysAsync(ctx);
+        if (full.Count == 0) { await AskDayAsync(ctx, "Abriu horário agora! 🎉 Escolha o dia:\n\n"); return; }
+        s.State = BotStates.ChoosingDay;
+        var rows = full.Take(CloudLimits.ListRows - 1)
+            .Select(d => new BotOption($"wday:{d}", BotFormat.DayLabel(d), "lotado · te aviso se abrir"))
+            .Append(new BotOption("nav:days", "‹ Voltar", "ver os dias com horário"))
+            .ToList();
+        await ListAsync(ctx, new ListMessage(
+            $"Em qual dia você quer *{svc.Name}*? Se abrir um horário, te aviso por aqui. 🔔",
+            "Ver dias",
+            [new BotListSection("Dias lotados", rows)]));
+    }
+
+    private async Task JoinWaitlistAsync(Ctx ctx, string date)
+    {
+        var s = ctx.S;
+        var svc = Service(ctx);
+        if (svc is null || s.VehicleType is null || !IsoDateRegex().IsMatch(date) || string.CompareOrdinal(date, ctx.Today) < 0)
+        {
+            await InvalidAsync(ctx);
+            return;
+        }
+        await ClientAsync(ctx);
+        await waitlist.AddAsync(ctx.BranchId, new WaitlistRequest
+        {
+            Date = date,
+            ServiceId = svc.Id,
+            VehicleType = s.VehicleType,
+            ExtraIds = s.ExtraIds,
+            ClientName = ClientName(ctx),
+            Phone = ctx.Msg.Phone,
+            Origin = Domain.Agenda.BookingOrigins.WhatsApp,
+        }, ctx.Ct);
+        s.Reset();
+        logger.LogInformation("Bot {Phone}: entrou na lista de espera de {Date}", ctx.Msg.Phone, date);
+        await TextAsync(ctx,
+            $"Combinado! 🔔 Se abrir um horário para *{svc.Name}* em {BotFormat.DayLong(date)}, te aviso por aqui.\n" +
+            "Para marcar em outro dia, mande *menu*.");
+    }
+
+    /// <summary>Tocou em "Ver horários" no aviso de vaga: mostra os horários livres do dia, já com o serviço do pedido.</summary>
+    private async Task OnWaitlistNoticeAsync(Ctx ctx, string entryId)
+    {
+        var s = ctx.S;
+        var entry = Guid.TryParse(entryId, out var id) ? await waitlist.GetAsync(ctx.BranchId, id, ctx.Ct) : null;
+        var date = entry is null ? null : BotFormat.Iso(entry.Date);
+        if (entry is null || !SamePhone(entry.Phone, ctx.Msg.Phone) || entry.Status == Domain.Agenda.WaitlistStatuses.Canceled
+            || string.CompareOrdinal(date, ctx.Today) < 0)
+        {
+            s.Reset();
+            await TextAsync(ctx, "Esse aviso não vale mais 😕 Mande *menu* para ver os horários livres.");
+            return;
+        }
+        var svc = ctx.Cfg.ServiceById(entry.ServiceId);
+        if (svc is not { Active: true }) { s.Reset(); await AskServiceAsync(ctx); return; }
+        s.Reset();
+        s.ServiceId = svc.Id;
+        s.VehicleType = entry.VehicleType;
+        s.ExtraIds = WaitlistService.SplitIds(entry.ExtraIds).ToList();
+        s.Date = date;
+        s.SlotPage = 0;
         await AskSlotAsync(ctx);
     }
 
@@ -848,6 +954,37 @@ public sealed partial class BookingFlow(IAgendaService agenda, IBotStore store, 
         await AskDayAsync(ctx, $"Sem problema! Seu horário atual ({when}) continua reservado até você escolher o novo.\n\n");
     }
 
+    /* ---------- Avaliação depois do atendimento ---------- */
+
+    private async Task OnRatingAsync(Ctx ctx, int rating, string bookingId)
+    {
+        var s = ctx.S;
+        var b = await FindBookingAsync(ctx, bookingId);
+        var client = b is null ? null : await ClientAsync(ctx);
+        var owner = b is not null && (SamePhone(b.Phone, ctx.Msg.Phone) || (client is not null && b.ClientId == client.Id));
+        if (b is null || !owner || b.Status != "done")
+        {
+            s.Reset();
+            await TextAsync(ctx, "Não encontrei esse atendimento no seu número 🤔 Digite *menu* para agendar ou *atendente* para falar com a equipe.");
+            return;
+        }
+        var first = b.Rating is null;
+        await agenda.RateAsync(ctx.BranchId, Guid.Parse(b.Id), rating, ctx.Ct);
+        s.Reset();
+        if (rating >= 3)
+        {
+            await TextAsync(ctx, first
+                ? $"Obrigado pela avaliação, {Name(ctx)}! 💙 Quando quiser marcar de novo, é só mandar *menu*."
+                : "Avaliação atualizada. Obrigado! 💙");
+            return;
+        }
+        // Avaliação ruim: a conversa vai para a equipe, que vê na caixa de entrada e responde.
+        s.State = BotStates.WithAttendant;
+        logger.LogInformation("Bot {Phone}: avaliou mal o atendimento {Booking}", s.Phone, b.Id);
+        await TextAsync(ctx,
+            $"Poxa, sentimos muito, {Name(ctx)}. 😔 Conta pra gente o que aconteceu? A equipe da {ctx.Cfg.BusinessName} vai ler e te responder por aqui.");
+    }
+
     /// <summary>
     /// Agendamento do número e ainda marcado; senão responde o motivo e devolve nulo. Dono = mesmo telefone (com ou
     /// sem o nono dígito) ou agendamento do cliente cadastrado com este telefone. Sem essa checagem, um terceiro
@@ -1115,6 +1252,9 @@ public sealed partial class BookingFlow(IAgendaService agenda, IBotStore store, 
 
     [GeneratedRegex(@"^(conf|rem|canc|cask):(.+)$")]
     private static partial Regex ReminderRegex();
+
+    [GeneratedRegex(@"^rate([1-5]):(.+)$")]
+    private static partial Regex RatingRegex();
 
     [GeneratedRegex(@"^slot:(\d+)$")]
     private static partial Regex SlotRegex();

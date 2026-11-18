@@ -16,8 +16,21 @@ namespace Api.Controllers;
 [Authorize]
 [TypeFilter(typeof(AgendaExceptionFilter))]
 [TypeFilter(typeof(AgendaBranchAccessFilter))]
+[TypeFilter(typeof(AgendaChangePublisher))]
 public sealed class AgendaController(IAgendaService agenda) : ControllerBase
 {
+    /* ---------- Mudanças (tempo real) ---------- */
+
+    /// <summary>
+    /// Espera até <paramref name="espera"/> segundos (no máximo 30) por uma mudança na filial depois da versão
+    /// <paramref name="desde"/> e devolve a versão nova e o que mudou (config, bookings, blocks, reminders, clients, plans,
+    /// inbox). Sem <paramref name="desde"/> devolve só a versão atual. O app chama em sequência (long-poll).
+    /// </summary>
+    [HttpGet("{branchId:guid}/mudancas")]
+    public async Task<ActionResult<AgendaChangesDto>> Changes(
+        Guid branchId, [FromServices] AgendaChangeFeed feed, [FromQuery] long desde = -1, [FromQuery] int espera = 25, CancellationToken ct = default) =>
+        Ok(await feed.WaitAsync(branchId, desde, TimeSpan.FromSeconds(Math.Clamp(espera, 0, 30)), ct));
+
     /* ---------- Filiais ---------- */
 
     /// <summary>Filiais que o usuário pode abrir na agenda (sem vínculo cadastrado = todas).</summary>
@@ -36,6 +49,7 @@ public sealed class AgendaController(IAgendaService agenda) : ControllerBase
 
     /// <summary>Grava a configuração inteira (boxes, serviços, horários e personalizações).</summary>
     [HttpPut("{branchId:guid}/config")]
+    [AgendaOwnerOnly]
     [Produces("application/json")]
     public async Task<IActionResult> SaveConfig(Guid branchId, [FromBody] JsonElement config, CancellationToken ct) =>
         Content(await agenda.SaveConfigAsync(branchId, config.GetRawText(), ct), "application/json");
@@ -87,6 +101,19 @@ public sealed class AgendaController(IAgendaService agenda) : ControllerBase
         return CreatedAtAction(nameof(GetBooking), new { branchId, id = created.Id }, created);
     }
 
+    /// <summary>
+    /// Agendamento recorrente ("toda sexta às 9h"): cria um agendamento por data (toda semana, a cada 2 semanas ou todo mês,
+    /// de 2 a 52 vezes). As datas ocupadas voltam com o motivo; se nenhuma der, 409.
+    /// </summary>
+    [HttpPost("{branchId:guid}/agendamentos/serie")]
+    public async Task<ActionResult<SeriesResultDto>> CreateSeries(Guid branchId, [FromBody] SeriesRequest request, CancellationToken ct) =>
+        Ok(await agenda.CreateSeriesAsync(branchId, request, ct));
+
+    /// <summary>Cancela este e os próximos agendamentos da série que ainda estão marcados.</summary>
+    [HttpPost("{branchId:guid}/agendamentos/{id:guid}/cancelar-serie")]
+    public async Task<IActionResult> CancelSeries(Guid branchId, Guid id, CancellationToken ct) =>
+        Ok(new { cancelados = await agenda.CancelSeriesAsync(branchId, id, ct) });
+
     /// <summary>Muda o status (em atendimento, concluído, cancelado, não compareceu).</summary>
     [HttpPatch("{branchId:guid}/agendamentos/{id:guid}/status")]
     public async Task<ActionResult<BookingDto>> SetStatus(Guid branchId, Guid id, [FromBody] StatusRequest request, CancellationToken ct) =>
@@ -99,6 +126,7 @@ public sealed class AgendaController(IAgendaService agenda) : ControllerBase
 
     /// <summary>Exclui um agendamento e os lembretes dele.</summary>
     [HttpDelete("{branchId:guid}/agendamentos/{id:guid}")]
+    [AgendaOwnerOnly]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     public async Task<IActionResult> DeleteBooking(Guid branchId, Guid id, CancellationToken ct)
     {
@@ -108,8 +136,47 @@ public sealed class AgendaController(IAgendaService agenda) : ControllerBase
 
     /// <summary>Apaga de vez os agendamentos (e lembretes) anteriores a <paramref name="antesDe"/> (LGPD).</summary>
     [HttpDelete("{branchId:guid}/agendamentos")]
+    [AgendaOwnerOnly]
     public async Task<ActionResult<PruneResult>> Prune(Guid branchId, [FromQuery] string antesDe, CancellationToken ct) =>
         Ok(new PruneResult(await agenda.PruneAsync(branchId, antesDe, ct)));
+
+    /// <summary>Histórico do agendamento (quem marcou, mudou status, editou, recebeu), incluindo os que ele substituiu.</summary>
+    [HttpGet("{branchId:guid}/agendamentos/{id:guid}/historico")]
+    public async Task<ActionResult<IReadOnlyList<AuditEntryDto>>> History(Guid branchId, Guid id, CancellationToken ct) =>
+        Ok(await agenda.HistoryAsync(branchId, id, ct));
+
+    /// <summary>
+    /// Registra o recebimento: forma (cash, pix, debit, credit, other), desconto em R$ e valor (vazio = preço − desconto).
+    /// Chamar de novo corrige o pagamento.
+    /// </summary>
+    [HttpPost("{branchId:guid}/agendamentos/{id:guid}/pagamento")]
+    public async Task<ActionResult<BookingDto>> Pay(Guid branchId, Guid id, [FromBody] PaymentRequest request, CancellationToken ct) =>
+        Ok(await agenda.PayAsync(branchId, id, request, ct));
+
+    /// <summary>Desfaz o pagamento (só o dono).</summary>
+    [HttpDelete("{branchId:guid}/agendamentos/{id:guid}/pagamento")]
+    [AgendaOwnerOnly]
+    public async Task<ActionResult<BookingDto>> UndoPayment(Guid branchId, Guid id, CancellationToken ct) =>
+        Ok(await agenda.UndoPaymentAsync(branchId, id, ct));
+
+    /* ---------- Relatórios (dono) ---------- */
+
+    /// <summary>
+    /// Relatório do período (AAAA-MM-DD, até 400 dias): recebido, a receber, descontos, mensalidades, ticket médio, faltas,
+    /// por serviço, box (com ocupação), forma de pagamento, dia, melhores clientes e planos ativos.
+    /// </summary>
+    [HttpGet("{branchId:guid}/relatorios")]
+    [AgendaOwnerOnly]
+    public async Task<ActionResult<ReportDto>> Report(
+        Guid branchId, [FromQuery] string de, [FromQuery] string ate, [FromServices] ReportService reports, CancellationToken ct) =>
+        Ok(await reports.BuildAsync(branchId, de, ate, ct));
+
+    /// <summary>Atendimentos do período em texto separado por tabulação (cola direto no Excel ou no Google Planilhas).</summary>
+    [HttpGet("{branchId:guid}/relatorios/planilha")]
+    [AgendaOwnerOnly]
+    public async Task<IActionResult> Spreadsheet(
+        Guid branchId, [FromQuery] string de, [FromQuery] string ate, [FromServices] ReportService reports, CancellationToken ct) =>
+        Content(await reports.SpreadsheetAsync(branchId, de, ate, ct), "text/tab-separated-values; charset=utf-8");
 
     /// <summary>Registra a resposta do cliente ao lembrete (confirmou, quer remarcar, cancelou).</summary>
     [HttpPost("{branchId:guid}/agendamentos/{id:guid}/resposta")]
@@ -140,6 +207,32 @@ public sealed class AgendaController(IAgendaService agenda) : ControllerBase
         await agenda.DeleteBlockAsync(branchId, id, ct);
         return NoContent();
     }
+
+    /* ---------- Lista de espera ---------- */
+
+    /// <summary>Pedidos da lista de espera no período (AAAA-MM-DD), de todos os status.</summary>
+    [HttpGet("{branchId:guid}/espera")]
+    public async Task<ActionResult<IReadOnlyList<WaitlistEntryDto>>> Waitlist(
+        Guid branchId, [FromQuery] string de, [FromQuery] string ate, [FromServices] WaitlistService waitlist, CancellationToken ct) =>
+        Ok(await waitlist.ListAsync(branchId, de, ate, ct));
+
+    /// <summary>Põe o cliente na lista de espera do dia (um pedido por número e dia: pedir de novo atualiza).</summary>
+    [HttpPost("{branchId:guid}/espera")]
+    public async Task<ActionResult<WaitlistEntryDto>> AddToWaitlist(
+        Guid branchId, [FromBody] WaitlistRequest request, [FromServices] WaitlistService waitlist, CancellationToken ct) =>
+        Ok(await waitlist.AddAsync(branchId, request, ct));
+
+    [HttpDelete("{branchId:guid}/espera/{id:guid}")]
+    public async Task<IActionResult> RemoveFromWaitlist(Guid branchId, Guid id, [FromServices] WaitlistService waitlist, CancellationToken ct)
+    {
+        await waitlist.CancelAsync(branchId, id, ct);
+        return NoContent();
+    }
+
+    /// <summary>Gatilho manual do worker: confere a agenda e avisa quem tem vaga agora.</summary>
+    [HttpPost("{branchId:guid}/espera/processar")]
+    public async Task<IActionResult> ProcessWaitlist(Guid branchId, [FromServices] WaitlistService waitlist, CancellationToken ct) =>
+        Ok(new { alterados = await waitlist.NotifyAsync(branchId, ct) });
 
     /* ---------- Lembretes ---------- */
 
@@ -190,6 +283,7 @@ public sealed class AgendaController(IAgendaService agenda) : ControllerBase
 
     /// <summary>Tira o cliente do cadastro. Os agendamentos dele continuam na agenda.</summary>
     [HttpDelete("{branchId:guid}/clientes/{id:guid}")]
+    [AgendaOwnerOnly]
     public async Task<IActionResult> DeleteClient(Guid branchId, Guid id, CancellationToken ct)
     {
         await agenda.DeleteClientAsync(branchId, id, ct);
@@ -210,6 +304,7 @@ public sealed class AgendaController(IAgendaService agenda) : ControllerBase
 
     /// <summary>Cadastra um plano: serviços com vezes por mês e desconto em % sobre o valor cheio.</summary>
     [HttpPost("{branchId:guid}/planos")]
+    [AgendaOwnerOnly]
     [ProducesResponseType(typeof(LoyaltyPlanDto), StatusCodes.Status201Created)]
     public async Task<ActionResult<LoyaltyPlanDto>> CreatePlan(Guid branchId, [FromBody] LoyaltyPlanRequest request, CancellationToken ct)
     {
@@ -219,17 +314,29 @@ public sealed class AgendaController(IAgendaService agenda) : ControllerBase
 
     /// <summary>Altera o plano. Quem já aderiu continua com o plano como estava.</summary>
     [HttpPut("{branchId:guid}/planos/{id:guid}")]
+    [AgendaOwnerOnly]
     public async Task<ActionResult<LoyaltyPlanDto>> UpdatePlan(Guid branchId, Guid id, [FromBody] LoyaltyPlanRequest request, CancellationToken ct) =>
         Ok(await agenda.UpdatePlanAsync(branchId, id, request, ct));
 
     /// <summary>Tira o plano da lista. Os clientes que aderiram continuam com ele até encerrar.</summary>
     [HttpDelete("{branchId:guid}/planos/{id:guid}")]
+    [AgendaOwnerOnly]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     public async Task<IActionResult> DeletePlan(Guid branchId, Guid id, CancellationToken ct)
     {
         await agenda.DeletePlanAsync(branchId, id, ct);
         return NoContent();
     }
+
+    /// <summary>
+    /// Manda agora os avisos de mensalidade pendentes (vencendo e em atraso) que estão ligados em Ajustes. O worker faz isso
+    /// de hora em hora; cada aviso sai uma vez por plano e mês.
+    /// </summary>
+    [HttpPost("{branchId:guid}/planos/avisos")]
+    [AgendaOwnerOnly]
+    public async Task<ActionResult<IReadOnlyList<PlanNoticeDto>>> SendPlanNotices(
+        Guid branchId, [FromServices] PlanBillingService billing, CancellationToken ct) =>
+        Ok(await billing.SendNoticesAsync(branchId, ct));
 
     /// <summary>Planos do cliente com o uso de cada serviço no mês de <paramref name="data"/> (AAAA-MM-DD; vazio = mês atual).</summary>
     [HttpGet("{branchId:guid}/clientes/{id:guid}/planos")]
@@ -288,8 +395,10 @@ public sealed class AgendaController(IAgendaService agenda) : ControllerBase
     /// </summary>
     [HttpPost("{branchId:guid}/bot/mensagens")]
     public async Task<ActionResult<BotSimulationResponse>> SimulateBot(
-        Guid branchId, [FromBody] BotSimulationRequest request, [FromServices] BookingFlow flow, [FromServices] IBotStore store, CancellationToken ct)
+        Guid branchId, [FromBody] BotSimulationRequest request, [FromServices] BookingFlow flow, [FromServices] IBotStore store,
+        [FromServices] AgendaActor actor, CancellationToken ct)
     {
+        actor.Name = AgendaActor.Bot + " (simulador)";
         var phone = AgendaFormat.NormalizePhone(request.Telefone);
         if (phone.Length < 10) throw new AgendaValidationException("Telefone inválido.");
         var kind = request.Tipo ?? (request.OpcaoId is null ? "text" : "interactive");
@@ -371,7 +480,28 @@ public sealed class AgendaController(IAgendaService agenda) : ControllerBase
     public async Task<ActionResult<IReadOnlyList<ReminderTemplateDto>>> MessageTemplates(Guid branchId, CancellationToken ct)
     {
         var cfg = AgendaConfigModel.Parse(await agenda.GetConfigAsync(branchId, ct));
-        return Ok(BotTemplates.All.Select(spec => TemplateDto(spec, cfg)).ToList());
+        var sampleValues = BotTemplates.PlanValues(cfg, "Maria Silva", "Mensal Prata", 199.90m, DateTime.Today.AddDays(3));
+        var waitlistSample = new Dictionary<string, string>
+        {
+            ["nome"] = "Maria",
+            ["estetica"] = cfg.BusinessName,
+            ["data"] = BotFormat.DayLabel(AgendaFormat.Date(DateTime.Today.AddDays(2))),
+            ["servico"] = cfg.Services.FirstOrDefault()?.Name ?? "Lavagem completa",
+            ["hora"] = "14:00",
+        };
+        return Ok(BotTemplates.All.Select(spec => TemplateDto(spec, cfg))
+            .Concat(BotTemplates.PlanSpecs.Select(spec =>
+            {
+                var text = spec.Text(cfg.Texts);
+                return new ReminderTemplateDto(
+                    spec.DefaultName, BotTemplates.DefaultLanguage, "UTILITY", BotTemplates.MetaBody(text), BotFormat.Variables(text), [],
+                    BotTemplates.BuildPlan(spec, sampleValues, cfg).Preview, spec.Type, spec.Title);
+            }))
+            .Append(new ReminderTemplateDto(
+                BotTemplates.WaitlistName, BotTemplates.DefaultLanguage, "UTILITY", BotTemplates.MetaBody(cfg.Texts.WaitlistText),
+                BotFormat.Variables(cfg.Texts.WaitlistText), [BotTemplates.WaitlistButton],
+                BotTemplates.Waitlist(Guid.Empty, waitlistSample, cfg).Preview, BotTemplates.WaitlistType, BotTemplates.WaitlistSpec.Title))
+            .ToList());
     }
 
     private static ReminderTemplateDto TemplateDto(BotTemplates.Spec spec, AgendaConfigModel cfg)

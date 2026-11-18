@@ -62,17 +62,34 @@ public static class LoyaltyRules
         return months;
     }
 
-    /// <summary>Mensalidades do plano, da mais recente para a mais antiga: pagas com o valor pago, as outras pendentes com o valor atual.</summary>
-    public static IReadOnlyList<PlanChargeDto> Charges(AgendaClientPlan plan, IEnumerable<AgendaPlanPayment> payments, DateTime today)
+    /// <summary>Dia do vencimento do plano (1 a 28): o escolhido, ou o dia da adesão.</summary>
+    public static int DueDayOf(AgendaClientPlan plan) => plan.DueDay is >= 1 and <= 28 ? plan.DueDay : Math.Min(plan.StartDate.Day, 28);
+
+    /// <summary>Vencimento da mensalidade do mês.</summary>
+    public static DateTime DueDate(AgendaClientPlan plan, DateTime month) => new DateTime(month.Year, month.Month, 1).AddDays(DueDayOf(plan) - 1);
+
+    /// <summary>
+    /// Mensalidades do plano, da mais recente para a mais antiga: pagas com o valor pago, as outras pendentes com o valor atual.
+    /// Pendente vira atrasada depois de <paramref name="graceDays"/> dias do vencimento.
+    /// </summary>
+    public static IReadOnlyList<PlanChargeDto> Charges(AgendaClientPlan plan, IEnumerable<AgendaPlanPayment> payments, DateTime today, int graceDays = 5)
     {
         var paid = payments.Where(p => p.ClientPlanId == plan.Id && p.Active).ToDictionary(p => p.Month.Date);
         return ChargeMonths(plan, today)
             .OrderByDescending(m => m)
-            .Select(m => paid.TryGetValue(m, out var p)
-                ? new PlanChargeDto(MonthKey(m), p.Amount, "paid", AgendaFormat.LocalDateTime(p.PaidAt))
-                : new PlanChargeDto(MonthKey(m), plan.Price, "pending", null))
+            .Select(m =>
+            {
+                var due = DueDate(plan, m);
+                return paid.TryGetValue(m, out var p)
+                    ? new PlanChargeDto(MonthKey(m), p.Amount, "paid", AgendaFormat.LocalDateTime(p.PaidAt), AgendaFormat.Date(due), false)
+                    : new PlanChargeDto(MonthKey(m), plan.Price, "pending", null, AgendaFormat.Date(due), today.Date > due.AddDays(Math.Max(0, graceDays)));
+            })
             .ToList();
     }
+
+    /// <summary>Tem mensalidade atrasada (para suspender o plano, se a estética quiser).</summary>
+    public static bool IsOverdue(AgendaClientPlan plan, IEnumerable<AgendaPlanPayment> payments, DateTime today, int graceDays) =>
+        Charges(plan, payments, today, graceDays).Any(c => c.Overdue);
 
     /// <summary>'AAAA-MM' → primeiro dia do mês.</summary>
     public static DateTime ParseMonth(string? key) =>

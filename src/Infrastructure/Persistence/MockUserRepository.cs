@@ -84,6 +84,13 @@ public sealed class MockUserRepository : IUserRepository
         return Task.FromResult(true);
     }
 
+    public Task UpdateSecurityAsync(User user, CancellationToken cancellationToken = default)
+    {
+        var index = _store.FindIndex(u => u.Id == user.Id);
+        if (index >= 0) _store[index] = user;
+        return Task.CompletedTask;
+    }
+
     public Task<bool> SoftDeleteAsync(Guid id, CancellationToken cancellationToken = default)
     {
         var u = _store.FirstOrDefault(x => x.Id == id);

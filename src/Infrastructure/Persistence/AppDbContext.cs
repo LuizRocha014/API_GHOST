@@ -28,6 +28,9 @@ public sealed class AppDbContext : DbContext
     public DbSet<UserCompanyBranch> UserCompanyBranches => Set<UserCompanyBranch>();
     public DbSet<AgendaSettings> AgendaSettings => Set<AgendaSettings>();
     public DbSet<AgendaBooking> AgendaBookings => Set<AgendaBooking>();
+    public DbSet<AgendaAuditEntry> AgendaAudit => Set<AgendaAuditEntry>();
+    public DbSet<AgendaPlanNotice> AgendaPlanNotices => Set<AgendaPlanNotice>();
+    public DbSet<AgendaWaitlistEntry> AgendaWaitlist => Set<AgendaWaitlistEntry>();
     public DbSet<AgendaBlock> AgendaBlocks => Set<AgendaBlock>();
     public DbSet<AgendaClient> AgendaClients => Set<AgendaClient>();
     public DbSet<AgendaClientVehicle> AgendaClientVehicles => Set<AgendaClientVehicle>();
@@ -38,6 +41,7 @@ public sealed class AppDbContext : DbContext
     public DbSet<BotSessionRecord> BotSessions => Set<BotSessionRecord>();
     public DbSet<BotProcessedMessage> BotProcessedMessages => Set<BotProcessedMessage>();
     public DbSet<BotMessage> BotMessages => Set<BotMessage>();
+    public DbSet<BotQueueItem> BotQueueItems => Set<BotQueueItem>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -80,6 +84,9 @@ public sealed class AppDbContext : DbContext
             e.Property(x => x.PasswordHash).HasMaxLength(512);
             e.Property(x => x.CreatedAt).HasColumnType("datetime2");
             e.Property(x => x.UpdatedAt).HasColumnType("datetime2");
+            e.Property(x => x.Role).HasMaxLength(16).HasDefaultValue(UserRoles.Owner);
+            e.Property(x => x.LockedUntil).HasColumnType("datetime2");
+            e.Property(x => x.LastLoginAt).HasColumnType("datetime2");
             e.HasIndex(x => x.Username).IsUnique();
             e.HasIndex(x => x.Email).IsUnique();
         });
@@ -250,13 +257,66 @@ public sealed class AppDbContext : DbContext
             e.Property(x => x.Status).HasMaxLength(16);
             e.Property(x => x.Origin).HasMaxLength(16);
             e.Property(x => x.ExtrasJson).HasColumnType("nvarchar(max)").HasDefaultValue("[]");
+            e.Property(x => x.Discount).HasPrecision(18, 2);
+            e.Property(x => x.PaymentMethod).HasMaxLength(16);
+            e.Property(x => x.PaidAmount).HasPrecision(18, 2);
+            e.Property(x => x.PaidAt).HasColumnType("datetime2");
             e.Property(x => x.CreatedAt).HasColumnType("datetime2");
             e.Property(x => x.UpdatedAt).HasColumnType("datetime2");
+            e.HasIndex(x => x.SeriesId).HasFilter("[SeriesId] IS NOT NULL");
+            e.Property(x => x.RatedAt).HasColumnType("datetime2");
             // A reserva trava os agendamentos do dia da filial (UPDLOCK, HOLDLOCK): o índice faz o lock pegar só o dia.
             e.HasIndex(x => new { x.BranchId, x.Date });
             e.HasIndex(x => new { x.BranchId, x.ClientId });
             // Uso do plano no mês: conta os agendamentos do plano por serviço e período.
             e.HasIndex(x => new { x.ClientPlanId, x.Date });
+            e.HasOne<Branch>().WithMany().HasForeignKey(x => x.BranchId).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<AgendaPlanNotice>(e =>
+        {
+            e.ToTable("AgendaPlanNotices");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Month).HasColumnType("date");
+            e.Property(x => x.Type).HasMaxLength(16);
+            e.Property(x => x.Status).HasMaxLength(16);
+            e.Property(x => x.WamId).HasMaxLength(128);
+            e.Property(x => x.Error).HasMaxLength(1000);
+            e.Property(x => x.CreatedAt).HasColumnType("datetime2");
+            e.HasIndex(x => new { x.ClientPlanId, x.Month, x.Type }).IsUnique();
+            e.HasOne<Branch>().WithMany().HasForeignKey(x => x.BranchId).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<AgendaWaitlistEntry>(e =>
+        {
+            e.ToTable("AgendaWaitlist");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Date).HasColumnType("date");
+            e.Property(x => x.ServiceId).HasMaxLength(64);
+            e.Property(x => x.VehicleType).HasMaxLength(32);
+            e.Property(x => x.ExtraIds).HasMaxLength(500);
+            e.Property(x => x.ClientName).HasMaxLength(200);
+            e.Property(x => x.Phone).HasMaxLength(20);
+            e.Property(x => x.Origin).HasMaxLength(16);
+            e.Property(x => x.Status).HasMaxLength(16);
+            e.Property(x => x.WamId).HasMaxLength(128);
+            e.Property(x => x.Error).HasMaxLength(1000);
+            e.Property(x => x.NotifiedAt).HasColumnType("datetime2");
+            e.Property(x => x.CreatedAt).HasColumnType("datetime2");
+            e.Property(x => x.UpdatedAt).HasColumnType("datetime2");
+            e.HasIndex(x => new { x.BranchId, x.Date, x.Status });
+            e.HasOne<Branch>().WithMany().HasForeignKey(x => x.BranchId).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<AgendaAuditEntry>(e =>
+        {
+            e.ToTable("AgendaAudit");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Actor).HasMaxLength(120);
+            e.Property(x => x.Action).HasMaxLength(32);
+            e.Property(x => x.Details).HasMaxLength(1000);
+            e.Property(x => x.CreatedAt).HasColumnType("datetime2");
+            e.HasIndex(x => new { x.BranchId, x.BookingId, x.CreatedAt });
             e.HasOne<Branch>().WithMany().HasForeignKey(x => x.BranchId).OnDelete(DeleteBehavior.Restrict);
         });
 
@@ -390,6 +450,22 @@ public sealed class AppDbContext : DbContext
             e.Property(x => x.MessageId).HasMaxLength(128);
             e.Property(x => x.ReceivedAt).HasColumnType("datetime2");
             e.HasIndex(x => x.ReceivedAt);
+        });
+
+        modelBuilder.Entity<BotQueueItem>(e =>
+        {
+            e.ToTable("BotQueueItems");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Kind).HasMaxLength(16);
+            e.Property(x => x.ExternalId).HasMaxLength(160);
+            e.Property(x => x.PayloadJson).HasColumnType("nvarchar(max)");
+            e.Property(x => x.Status).HasMaxLength(16);
+            e.Property(x => x.Error).HasMaxLength(1000);
+            e.Property(x => x.ReceivedAt).HasColumnType("datetime2");
+            e.Property(x => x.NextAttemptAt).HasColumnType("datetime2");
+            e.Property(x => x.ProcessedAt).HasColumnType("datetime2");
+            e.HasIndex(x => new { x.Status, x.NextAttemptAt });
+            e.HasIndex(x => x.ExternalId).IsUnique().HasFilter("[ExternalId] IS NOT NULL");
         });
 
         modelBuilder.Entity<BotMessage>(e =>

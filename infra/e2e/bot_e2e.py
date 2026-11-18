@@ -283,7 +283,9 @@ try:
             break
         created_bookings.append(nb["id"])
     r = talk(P, opcao="confirm:ok")
-    check("horário ocupado: avisa e reenvia a lista", "acabou de ser ocupado" in " ".join(m["texto"] for m in r["mensagens"])
+    # Era o último horário do dia: o bot diz que os horários do dia acabaram e volta para a lista de dias.
+    said = " ".join(m["texto"] for m in r["mensagens"])
+    check("horário ocupado: avisa e reenvia a lista", ("acabou de ser ocupado" in said or "acabaram de ser ocupados" in said)
           and r["estado"] in ("choosingSlot", "choosingDay") and slot_id not in ids(r), f"{r['estado']} {ids(r)[:3]}")
     talk(P, "cancelar")
 
@@ -673,6 +675,18 @@ try:
                 break
             time.sleep(0.5)
         check("resposta registrada no lembrete", cur.get("answer") == "confirmed", cur)
+
+        # fila persistente: tudo o que entrou pelo webhook foi processado, nada falhou
+        end = time.time() + 15
+        hs, health = 0, {}
+        while time.time() < end:
+            hs, health = raw("GET", "/health")
+            if hs == 200 and isinstance(health, dict) and health.get("fila", {}).get("pendentes") == 0:
+                break
+            time.sleep(0.5)
+        check("/health: banco ok e fila do webhook vazia", hs == 200 and health.get("banco") == "ok"
+              and health.get("fila", {}).get("pendentes") == 0, health)
+        check("/health: nenhum item da fila falhou nas últimas 24 h", health.get("fila", {}).get("falhas24h") == 0, health)
 finally:
     cleanup_test_data()
     s, _ = call("PUT", A + "/config", original_cfg, token=tok)

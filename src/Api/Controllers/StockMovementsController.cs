@@ -7,7 +7,7 @@ namespace Api.Controllers;
 /// <summary>Consulta de movimentações de estoque.</summary>
 [ApiController]
 [Route("api/[controller]")]
-[Authorize]
+[Authorize(Roles = Domain.Entities.UserRoles.Owner)]
 public sealed class StockMovementsController : ControllerBase
 {
     private readonly IInventoryService _inventory;

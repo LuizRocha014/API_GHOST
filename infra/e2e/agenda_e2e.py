@@ -377,7 +377,8 @@ check("falta gasta a vez do mês", pk6.get("clientPlanId") == cp["id"] and use3.
 month_now = dt.date.today().strftime("%Y-%m")
 s, plans = call("GET", A + f"/clientes/{did}/planos", token=tok)
 ch = plans[0]["charges"]
-check("mensalidade do mês da adesão pendente", ch == [{"month": month_now, "amount": plans[0]["price"], "status": "pending", "paidAt": None}], ch)
+check("mensalidade do mês da adesão pendente", len(ch) == 1 and {k: ch[0][k] for k in ("month", "amount", "status", "paidAt")}
+      == {"month": month_now, "amount": plans[0]["price"], "status": "pending", "paidAt": None} and ch[0]["overdue"] is False, ch)
 check("plano mostra 1 agendamento futuro coberto", plans[0]["upcomingBookings"] == 1, plans[0]["upcomingBookings"])
 s, p = call("GET", A + f"/clientes/{did}", token=tok)
 check("cliente com 1 mensalidade pendente", p["pendingCharges"] == 1, p["pendingCharges"])

@@ -238,6 +238,25 @@ public static class ReminderRules
         // Lembrete que sairia a menos de 2h do horário não ajuda ninguém.
         return candidate > startsAt.AddHours(-2) ? null : candidate;
     }
+
+    /// <summary>
+    /// Segundo lembrete para quem não respondeu: <c>RetryHours</c> antes do horário, dentro da janela de envio e pelo menos
+    /// 3 h depois do primeiro (tempo de o cliente responder). Nulo = não cabe.
+    /// </summary>
+    public static DateTime? RetryTime(DateTime date, int start, DateTime firstSendAt, ReminderPolicyModel policy)
+    {
+        if (policy.RetryHours <= 0) return null;
+        var startsAt = date.Date.AddMinutes(start);
+        var at = startsAt.AddHours(-Math.Clamp(policy.RetryHours, 1, 24));
+        var windowStart = Math.Min(policy.WindowStart, policy.WindowEnd);
+        var windowEnd = Math.Max(policy.WindowStart, policy.WindowEnd);
+        var m = (int)at.TimeOfDay.TotalMinutes;
+        // Antes da janela: vai no começo dela, se ainda sobrar 1 h até o horário. Depois da janela: no fim dela.
+        if (m < windowStart) at = at.Date.AddMinutes(windowStart);
+        else if (m > windowEnd) at = at.Date.AddMinutes(windowEnd);
+        if (at > startsAt.AddHours(-1)) return null;
+        return at < firstSendAt.AddHours(3) ? null : at;
+    }
 }
 
 /// <summary>Telefone, placa e formatos de data/hora do contrato.</summary>
@@ -313,7 +332,13 @@ public static class AgendaMapping
         b.ClientId?.ToString(),
         b.VehicleId?.ToString(),
         b.ClientPlanId?.ToString(),
-        BookingExtras.Parse(b.ExtrasJson));
+        BookingExtras.Parse(b.ExtrasJson),
+        b.Discount,
+        b.PaymentMethod,
+        b.PaidAmount,
+        b.PaidAt is { } paid ? DateTime.SpecifyKind(paid, DateTimeKind.Utc).ToString("O", CultureInfo.InvariantCulture) : null,
+        b.SeriesId?.ToString(),
+        b.Rating);
 
     public static BlockDto ToDto(this AgendaBlock k) =>
         new(k.Id.ToString(), k.BoxId, AgendaFormat.Date(k.Date), k.StartMin, k.EndMin, k.Reason);

@@ -29,6 +29,15 @@ O que o cliente consegue fazer sozinho:
   uma pergunta ("quanto custa a lavagem?"): o bot responde e mostra o menu. Configure em Ajustes → Negócio →
   Informações para o cliente (`info` da configuração).
 - **Falar com a equipe**: o bot fica calado e a conversa aparece na caixa de entrada do app.
+- **Lista de espera** (Ajustes › Lembretes › Lista de espera): nos dias lotados o bot oferece "🔔 Dia lotado? Te aviso se
+  abrir vaga". Quando um horário abre (cancelamento, remarcação, bloqueio removido), o `WaitlistWorker` manda o modelo
+  `vaga_disponivel` com o botão **Ver horários**, que leva direto aos horários livres daquele dia com o mesmo serviço.
+  Avisa das 8h às 21h; quem marca horário no dia sai da lista ("agendou"). A equipe vê e mexe na lista pela Agenda.
+- **Avaliação** (Ajustes › Lembretes): algumas horas depois de concluir, "Como foi o atendimento?" com **Ótimo**,
+  **Bom** e **Ruim**. A nota fica no agendamento e nos relatórios; quem toca em Ruim cai na caixa de entrada para a
+  equipe conversar.
+- **Lembrete de novo** (Ajustes › Lembretes): quem não respondeu o lembrete da véspera recebe o mesmo modelo algumas
+  horas antes do horário (dentro da janela de envio). Quem já respondeu não recebe.
 
 Proteções do agendamento automático (Ajustes → Bot e mensagens; só valem para agendamento novo pelo WhatsApp):
 
@@ -55,7 +64,10 @@ cliente ◄── Cloud API (graph.facebook.com) ◄── CloudMessagingChannel
 | `LogMessagingChannel` | idem | Modo `Log`: não envia nada, só registra. |
 | `WhatsAppReminderSender` | idem | Lembrete D-1 pelo template aprovado (substituiu o `LocalReminderSender`). |
 | `WhatsAppWebhookController` | `src/Api/Controllers` | Verificação da Meta (GET) e recebimento (POST). |
-| `BotWorker` | `src/Api/Agenda` | Processa a fila e apaga a conversa fora da retenção a cada 6 h. |
+| `BotWorker` | `src/Api/Agenda` | Processa a fila (persistente, em `BotQueueItems`) e apaga a conversa fora da retenção a cada 6 h. |
+| `ReminderWorker` | idem | A cada minuto envia lembretes, confirmações, carro pronto e avaliação vencidos. |
+| `PlanBillingWorker` | idem | De hora em hora (9h–19h) avisa mensalidade vencendo e em atraso. |
+| `WaitlistWorker` | idem | A cada minuto confere a lista de espera e avisa quem tem vaga. |
 
 Regras que valem em qualquer passo:
 
@@ -69,6 +81,8 @@ Regras que valem em qualquer passo:
 - **Respostas do lembrete** (`conf:`, `rem:`, `canc:` + id): conferem se o número é o dono do agendamento (aceita o
   número com e sem o nono dígito) e respeitam `bot.cancelMinHours` (dentro do prazo, só com a equipe). Remarcar mantém o
   horário antigo até o novo ser reservado.
+- **Botões da avaliação** (`rate5:`, `rate3:`, `rate1:` + id) e do **aviso de vaga** (`wl:` + id do pedido): também só
+  valem para o número do cliente.
 - **Áudio, foto, figurinha:** o bot pede para responder em texto ou tocar numa opção.
 
 Os textos (saudação, agendado, confirmado, atendente, lembrete), os dias à frente, a antecedência mínima, perguntar ou
@@ -86,7 +100,10 @@ Seção `WhatsApp` do `appsettings` (os segredos ficam fora do repositório):
 | `AppSecret` | – | **Segredo.** Chave secreta do app (valida a assinatura do webhook). |
 | `VerifyToken` | – | **Segredo.** Texto que você inventa e repete na tela do webhook da Meta. |
 | `Numbers` | `[]` | Lista `{ PhoneNumberId, BranchId }`: qual número do WhatsApp atende cada filial. |
-| `ReminderTemplate` | `lembrete_confirmacao` | Nome do template do lembrete aprovado na Meta. |
+| `ReminderTemplate` | `lembrete_confirmacao` | Nome do template do lembrete aprovado na Meta (também o "lembrete de novo"). |
+| `BookedTemplate`, `ReadyTemplate`, `ReviewTemplate` | `agendamento_confirmado`, `carro_pronto`, `avaliacao_atendimento` | Confirmação do balcão, carro pronto e avaliação. |
+| `PlanDueTemplate`, `PlanOverdueTemplate` | `mensalidade_vencendo`, `mensalidade_atrasada` | Avisos de mensalidade. |
+| `WaitlistTemplate` | `vaga_disponivel` | Aviso de vaga da lista de espera. |
 | `TemplateLanguage` | `pt_BR` | Idioma do template. |
 | `RetentionDays` | `90` | Dias que a conversa fica guardada (LGPD). |
 
@@ -140,7 +157,7 @@ O app atualiza a lista a cada 15 s e a conversa aberta a cada 4 s; o selo da aba
 
 ### Teste ponta a ponta
 
-`python infra/e2e/bot_e2e.py` testa tudo isso contra a API e o banco de verdade (111 verificações): o caminho feliz,
+`python infra/e2e/bot_e2e.py` testa tudo isso contra a API e o banco de verdade (113 verificações): o caminho feliz,
 opção digitada, mensagem repetida, atendente, cancelar no meio, horário ocupado, as respostas do lembrete (dono, nono
 dígito, prazo mínimo, remarcar), parar/voltar lembretes, áudio, os limites da Cloud API, o webhook (verificação,
 assinatura, id repetido, número sem filial, status de entrega e botão do template) e a fase 2: informações, carros
@@ -177,9 +194,12 @@ Isto é feito por você, com a conta do Facebook da estética. Leva de minutos (
    **WhatsApp Manager → Modelos de mensagem** crie cada modelo com o **nome**, a categoria **Utilidade**, o idioma
    **Português (BR)**, o **corpo** exatamente como veio no campo `texto` (com `{{1}}`, `{{2}}`…; a Meta pede um exemplo
    para cada variável) e os botões de **resposta rápida** do campo `botoes`, nessa ordem:
-   - `lembrete_confirmacao` (lembrete na véspera): Confirmar, Remarcar, Cancelar;
+   - `lembrete_confirmacao` (lembrete na véspera e o de novo): Confirmar, Remarcar, Cancelar;
    - `agendamento_confirmado` (confirmação do balcão, se ligar em Ajustes): Remarcar, Cancelar;
-   - `carro_pronto` (se ligar em Ajustes): sem botões.
+   - `carro_pronto` (se ligar em Ajustes): sem botões;
+   - `avaliacao_atendimento` (se ligar em Ajustes): Ótimo, Bom, Ruim;
+   - `mensalidade_vencendo` e `mensalidade_atrasada` (planos de fidelidade, se ligar em Ajustes): sem botões;
+   - `vaga_disponivel` (lista de espera, se ligar em Ajustes): Ver horários.
 
    Espere a aprovação. Se mudar um texto nos Ajustes, o modelo precisa ser editado e aprovado de novo (a ordem das
    variáveis tem que bater). Os nomes podem ser trocados em `WhatsApp:ReminderTemplate`, `WhatsApp:BookedTemplate` e
@@ -196,18 +216,17 @@ para o Brasil.
 
 ## Publicar a API
 
-A Meta só chama URL https pública com certificado válido. Qualquer hospedagem de .NET serve (Azure App Service, uma VM
-com IIS ou Nginx, um container). Lembre de configurar as variáveis de ambiente (`ConnectionStrings__Remote`,
-`Jwt__Key`, `WhatsApp__*`) e deixar `ASPNETCORE_ENVIRONMENT=Production`.
+A Meta só chama URL https pública com certificado válido. O passo a passo (VPS com Docker e HTTPS automático, Azure ou
+o computador da estética com Cloudflare Tunnel, mais o backup) está em [deploy.md](deploy.md).
 
 ## Limitações conhecidas (próximas fases)
 
-- A fila entre o webhook e o bot é **em memória**: se a API cair depois de responder 200 e antes de processar, aquela
-  mensagem se perde (a Meta não reenvia). Uma fila persistente resolve.
-- Um único worker processa as mensagens em ordem; para muitas estéticas no mesmo servidor, processar por telefone em
+- A fila entre o webhook e o bot é **persistente** (`BotQueueItems`, até 5 tentativas com espera crescente), mas um
+  único worker processa as mensagens em ordem; para muitas estéticas no mesmo servidor, processar por telefone em
   paralelo.
-- A caixa de entrada é atualizada por consulta periódica (15 s / 4 s); aviso instantâneo (SignalR ou notificação no
-  celular) fica para depois. Fotos e áudios do cliente aparecem só como "[image]"/"[audio]".
+- O app recebe as mudanças na hora por long-poll (`GET mudancas`), com alerta na tela; **notificação no celular com o
+  app fechado** (Firebase Cloud Messaging) ainda não existe. Fotos e áudios do cliente aparecem só como
+  "[image]"/"[audio]".
 - Nos dados de exemplo do app (sem API) não há caixa de entrada: o simulador usa o bot local em Dart, que não tem as
   funções da fase 2.
 - Falhas de envio por limite de taxa da Meta não são reenviadas automaticamente (o lembrete tenta de novo até 3 vezes).

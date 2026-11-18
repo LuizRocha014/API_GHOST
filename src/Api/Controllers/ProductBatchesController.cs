@@ -8,7 +8,7 @@ namespace Api.Controllers;
 /// <summary>Lotes de produto por filial.</summary>
 [ApiController]
 [Route("api/[controller]")]
-[Authorize]
+[Authorize(Roles = Domain.Entities.UserRoles.Owner)]
 public sealed class ProductBatchesController : ControllerBase
 {
     private readonly IProductBatchService _batches;

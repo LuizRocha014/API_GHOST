@@ -7,7 +7,7 @@ namespace Api.Controllers;
 /// <summary>Cadastro de empresas.</summary>
 [ApiController]
 [Route("api/[controller]")]
-[Authorize]
+[Authorize(Roles = Domain.Entities.UserRoles.Owner)]
 public sealed class CompaniesController : ControllerBase
 {
     private readonly ICompanyService _companies;

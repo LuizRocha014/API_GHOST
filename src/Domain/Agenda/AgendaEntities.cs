@@ -54,6 +54,60 @@ public sealed class AgendaBooking : Core
     /// O preço e o fim do agendamento já incluem esses itens.
     /// </summary>
     public string ExtrasJson { get; set; } = "[]";
+
+    /// <summary>Desconto no atendimento (R$). O valor a cobrar é <see cref="Price"/> − desconto.</summary>
+    public decimal? Discount { get; set; }
+
+    /// <summary>Forma do pagamento (<see cref="PaymentMethods"/>). Nulo = ainda não recebido.</summary>
+    public string? PaymentMethod { get; set; }
+    public decimal? PaidAmount { get; set; }
+
+    /// <summary>Quando foi recebido (UTC).</summary>
+    public DateTime? PaidAt { get; set; }
+
+    /// <summary>Agendamento recorrente ("toda sexta às 9h"): os da mesma série têm o mesmo id.</summary>
+    public Guid? SeriesId { get; set; }
+
+    /// <summary>Avaliação do cliente depois do atendimento: 5 ótimo, 3 bom, 1 ruim.</summary>
+    public int? Rating { get; set; }
+    public DateTime? RatedAt { get; set; }
+}
+
+public static class PaymentMethods
+{
+    public const string Cash = "cash";
+    public const string Pix = "pix";
+    public const string Debit = "debit";
+    public const string Credit = "credit";
+    public const string Other = "other";
+    public static readonly string[] All = [Cash, Pix, Debit, Credit, Other];
+
+    public static string Label(string? method) => method switch
+    {
+        Cash => "dinheiro",
+        Pix => "Pix",
+        Debit => "cartão de débito",
+        Credit => "cartão de crédito",
+        Other => "outra forma",
+        _ => "—",
+    };
+}
+
+/// <summary>Registro do que aconteceu com o agendamento: quem, quando e o quê (histórico na ficha).</summary>
+public sealed class AgendaAuditEntry
+{
+    public Guid Id { get; set; }
+    public Guid BranchId { get; set; }
+    public Guid? BookingId { get; set; }
+    public Guid? ClientId { get; set; }
+
+    /// <summary>Nome de quem fez (pessoa da equipe, "Bot do WhatsApp" ou "Sistema").</summary>
+    public string Actor { get; set; } = string.Empty;
+
+    /// <summary>created, status, rescheduled, edited, paid, payment_undone, deleted, answer.</summary>
+    public string Action { get; set; } = string.Empty;
+    public string Details { get; set; } = string.Empty;
+    public DateTime CreatedAt { get; set; }
 }
 
 /// <summary>
@@ -99,6 +153,83 @@ public sealed class AgendaClientPlan : Core
     public decimal Price { get; set; }
     public DateTime StartDate { get; set; }
     public DateTime? EndDate { get; set; }
+
+    /// <summary>Dia do mês em que a mensalidade vence (1 a 28). 0 = o dia da adesão (até 28).</summary>
+    public int DueDay { get; set; }
+}
+
+/// <summary>
+/// Lista de espera: o cliente queria horário num dia lotado e pediu para ser avisado se abrir vaga. O worker confere a
+/// agenda e manda o aviso pelo WhatsApp (modelo "vaga_disponivel", botão Ver horários).
+/// </summary>
+public sealed class AgendaWaitlistEntry
+{
+    public Guid Id { get; set; }
+    public Guid BranchId { get; set; }
+    public DateTime Date { get; set; }
+    public string ServiceId { get; set; } = string.Empty;
+    public string VehicleType { get; set; } = string.Empty;
+
+    /// <summary>Adicionais escolhidos, separados por vírgula (contam no tempo do horário).</summary>
+    public string ExtraIds { get; set; } = string.Empty;
+    public string ClientName { get; set; } = string.Empty;
+    public string Phone { get; set; } = string.Empty;
+    public Guid? ClientId { get; set; }
+
+    /// <summary>whatsapp (pelo bot) ou counter (a equipe pôs na lista).</summary>
+    public string Origin { get; set; } = string.Empty;
+    public string Status { get; set; } = WaitlistStatuses.Waiting;
+    public int Attempts { get; set; }
+    public DateTime? NotifiedAt { get; set; }
+    public string? WamId { get; set; }
+    public string? Error { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public DateTime UpdatedAt { get; set; }
+}
+
+public static class WaitlistStatuses
+{
+    /// <summary>Esperando abrir vaga.</summary>
+    public const string Waiting = "waiting";
+
+    /// <summary>Avisado que abriu vaga.</summary>
+    public const string Notified = "notified";
+
+    /// <summary>Marcou horário nesse dia.</summary>
+    public const string Booked = "booked";
+    public const string Canceled = "canceled";
+
+    /// <summary>O dia passou sem vaga (ou o aviso falhou de vez).</summary>
+    public const string Expired = "expired";
+    public const string Failed = "failed";
+
+    public static bool IsOpen(string s) => s is Waiting or Notified;
+}
+
+/// <summary>Aviso de mensalidade mandado pelo WhatsApp: um por plano, mês e tipo (vencendo / em atraso).</summary>
+public sealed class AgendaPlanNotice
+{
+    public Guid Id { get; set; }
+    public Guid BranchId { get; set; }
+    public Guid ClientPlanId { get; set; }
+
+    /// <summary>Primeiro dia do mês da mensalidade.</summary>
+    public DateTime Month { get; set; }
+
+    /// <summary>due_soon ou overdue.</summary>
+    public string Type { get; set; } = string.Empty;
+
+    /// <summary>sent ou failed.</summary>
+    public string Status { get; set; } = string.Empty;
+    public string? WamId { get; set; }
+    public string? Error { get; set; }
+    public DateTime CreatedAt { get; set; }
+}
+
+public static class PlanNoticeTypes
+{
+    public const string DueSoon = "due_soon";
+    public const string Overdue = "overdue";
 }
 
 /// <summary>
@@ -191,6 +322,12 @@ public static class ReminderTypes
 
     /// <summary>"Seu carro está pronto" ao concluir o atendimento.</summary>
     public const string Ready = "ready";
+
+    /// <summary>"Como foi o atendimento?" algumas horas depois de concluir (botões Ótimo, Bom, Ruim).</summary>
+    public const string Review = "review";
+
+    /// <summary>Lembrete de novo, horas antes do horário, para quem não respondeu o da véspera (mesmo modelo da Meta).</summary>
+    public const string ConfirmationRetry = "confirmation_retry";
 }
 
 public static class BookingStatuses

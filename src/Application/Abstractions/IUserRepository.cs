@@ -12,5 +12,8 @@ public interface IUserRepository
     Task<bool> UsernameExistsAsync(string username, Guid? excludeId, CancellationToken cancellationToken = default);
     Task<User> AddAsync(User user, CancellationToken cancellationToken = default);
     Task<bool> UpdateAsync(User user, CancellationToken cancellationToken = default);
+
+    /// <summary>Grava senha, troca obrigatória, tentativas, bloqueio e último acesso.</summary>
+    Task UpdateSecurityAsync(User user, CancellationToken cancellationToken = default);
     Task<bool> SoftDeleteAsync(Guid id, CancellationToken cancellationToken = default);
 }

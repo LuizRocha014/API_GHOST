@@ -40,6 +40,9 @@ public sealed class AgendaConfigModel
     /// <summary>Mensagens automáticas além do lembrete: confirmação do balcão e carro pronto.</summary>
     public NotifyModel Notify { get; set; } = new();
 
+    /// <summary>Mensalidades dos planos: tolerância, suspensão por atraso e avisos pelo WhatsApp.</summary>
+    public PlanBillingModel PlanBilling { get; set; } = new();
+
     /// <summary>Adicionais que entram junto com o serviço (cera, aromatização…), com preço e tempo por tipo de veículo.</summary>
     public List<ExtraModel> Extras { get; set; } = [];
 
@@ -180,6 +183,11 @@ public sealed class ReminderPolicyModel
 
     /// <summary>"saturday" ou "sunday": quando sai o lembrete de quem marcou na segunda.</summary>
     public string MondayPolicy { get; set; } = "saturday";
+
+    /// <summary>
+    /// Sem resposta ao lembrete: manda de novo este tanto de horas antes do horário (dentro da janela de envio). 0 = desligado.
+    /// </summary>
+    public int RetryHours { get; set; }
 }
 
 public sealed class BotSettingsModel
@@ -214,6 +222,30 @@ public sealed class NotifyModel
 
     /// <summary>"Seu carro está pronto" quando o atendimento é concluído.</summary>
     public bool Ready { get; set; }
+
+    /// <summary>"Como foi o atendimento?" com Ótimo, Bom e Ruim, algumas horas depois de concluir.</summary>
+    public bool Review { get; set; }
+    public int ReviewDelayHours { get; set; } = 2;
+
+    /// <summary>Lista de espera: o bot oferece "me avise se abrir vaga" nos dias lotados e o cliente é avisado quando abre.</summary>
+    public bool Waitlist { get; set; }
+}
+
+/// <summary>Mensalidades dos planos de fidelidade.</summary>
+public sealed class PlanBillingModel
+{
+    /// <summary>Dias depois do vencimento até a mensalidade contar como atrasada.</summary>
+    public int GraceDays { get; set; } = 5;
+
+    /// <summary>Com mensalidade atrasada o plano para de cobrir agendamentos novos (volta ao pagar).</summary>
+    public bool SuspendOverdue { get; set; }
+
+    /// <summary>Aviso pelo WhatsApp alguns dias antes do vencimento (modelo da Meta).</summary>
+    public bool NotifyDue { get; set; }
+    public int NotifyDaysBefore { get; set; } = 3;
+
+    /// <summary>Aviso pelo WhatsApp quando atrasa (uma vez por mês; modelo da Meta).</summary>
+    public bool NotifyOverdue { get; set; }
 }
 
 /// <summary>Bloqueio semanal. <c>Days</c>: 0 = domingo … 6 = sábado. <c>BoxId</c> nulo = todos os boxes.</summary>
@@ -301,6 +333,30 @@ public sealed class BotTextsModel
     public const string DefaultReminder = "Olá {nome}! Lembrete do seu horário:\n📅 {data} às {hora}\n🚗 {servico}\n\nVocê confirma?";
     public const string DefaultCounterBooked = "Olá {nome}! Seu horário na {estetica} está marcado ✅\n📅 {data} às {hora}\n🚗 {servico}";
     public const string DefaultReady = "Olá {nome}! Seu veículo está pronto ✨\n🚗 {servico}\nPode vir buscar quando quiser. Obrigado pela preferência!";
+    public const string DefaultPlanDue = "Olá {nome}! A mensalidade do seu plano {plano} ({valor}) vence em {vencimento}.\n{pagamento}";
+    public const string DefaultPlanOverdue =
+        "Olá {nome}! A mensalidade do seu plano {plano} ({valor}) venceu em {vencimento} e ainda não consta como paga.\n{pagamento}\nSe já pagou, desconsidere 🙏";
+
+    public const string DefaultWaitlist =
+        "Olá {nome}! Abriu horário na {estetica} em {data} para {servico} 🎉\nO primeiro livre é às {hora}. Quer agendar? Toque em *Ver horários*.";
+
+    /// <summary>Aviso de vaga da lista de espera (modelo da Meta "vaga_disponivel", botão Ver horários).</summary>
+    public string? Waitlist { get; set; }
+
+    public string WaitlistText => Or(Waitlist, DefaultWaitlist);
+
+    public const string DefaultReview = "Olá {nome}! Como foi o atendimento hoje na {estetica}? 🚗✨\nSua opinião ajuda a gente a melhorar.";
+
+    /// <summary>Pedido de avaliação depois do atendimento (modelo da Meta, com Ótimo, Bom e Ruim).</summary>
+    public string? Review { get; set; }
+
+    public string ReviewText => Or(Review, DefaultReview);
+
+    /// <summary>Aviso de mensalidade vencendo (modelo da Meta).</summary>
+    public string? PlanDue { get; set; }
+
+    /// <summary>Aviso de mensalidade atrasada (modelo da Meta).</summary>
+    public string? PlanOverdue { get; set; }
 
     public string? Greeting { get; set; }
     public string? Booked { get; set; }
@@ -323,4 +379,6 @@ public sealed class BotTextsModel
     public string ReminderText => Or(Reminder, DefaultReminder);
     public string CounterBookedText => Or(CounterBooked, DefaultCounterBooked);
     public string ReadyText => Or(Ready, DefaultReady);
+    public string PlanDueText => Or(PlanDue, DefaultPlanDue);
+    public string PlanOverdueText => Or(PlanOverdue, DefaultPlanOverdue);
 }

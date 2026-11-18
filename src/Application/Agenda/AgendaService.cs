@@ -8,7 +8,22 @@ namespace Application.Agenda;
 public interface IAgendaService
 {
     Task<IReadOnlyList<AgendaBranchDto>> BranchesAsync(Guid userId, CancellationToken ct = default);
-    Task EnsureAccessAsync(Guid userId, Guid branchId, CancellationToken ct = default);
+
+    /// <summary>Histórico do agendamento (e dos que ele substituiu nas remarcações).</summary>
+    Task<IReadOnlyList<AuditEntryDto>> HistoryAsync(Guid branchId, Guid id, CancellationToken ct = default);
+
+    /// <summary>Avaliação do cliente (1 a 5) num atendimento concluído.</summary>
+    Task<BookingDto> RateAsync(Guid branchId, Guid id, int rating, CancellationToken ct = default);
+
+    /// <summary>Agendamento recorrente: cria um por data e devolve o que deu e o que não deu.</summary>
+    Task<SeriesResultDto> CreateSeriesAsync(Guid branchId, SeriesRequest request, CancellationToken ct = default);
+
+    /// <summary>Cancela este e os próximos da série que ainda estão marcados.</summary>
+    Task<int> CancelSeriesAsync(Guid branchId, Guid id, CancellationToken ct = default);
+
+    /// <summary>Registra (ou corrige) o recebimento: forma, desconto e valor.</summary>
+    Task<BookingDto> PayAsync(Guid branchId, Guid id, PaymentRequest request, CancellationToken ct = default);
+    Task<BookingDto> UndoPaymentAsync(Guid branchId, Guid id, CancellationToken ct = default);
 
     Task<string> GetConfigAsync(Guid branchId, CancellationToken ct = default);
     Task<string> SaveConfigAsync(Guid branchId, string json, CancellationToken ct = default);
@@ -77,8 +92,179 @@ public interface IAgendaService
     Task<ClientPlanDto> UndoChargeAsync(Guid branchId, Guid clientId, Guid id, string month, CancellationToken ct = default);
 }
 
-public sealed class AgendaService(IAgendaRepository repo, IAgendaClock clock, IReminderSender sender) : IAgendaService
+public sealed class AgendaService(IAgendaRepository repo, IAgendaClock clock, IReminderSender sender, AgendaActor actor) : IAgendaService
 {
+    /* ---------- Histórico ---------- */
+
+    private static readonly System.Globalization.CultureInfo PtBr = new("pt-BR");
+
+    private static string Money(decimal? v) => v is null ? "sem preço" : v.Value.ToString("C", PtBr);
+
+    private static string When(DateTime date, int start) => $"{date:dd/MM} às {AgendaFormat.Hm(start)}";
+
+    private static string StatusLabel(string status) => status switch
+    {
+        BookingStatuses.Scheduled => "Agendado",
+        BookingStatuses.InProgress => "Em atendimento",
+        BookingStatuses.Done => "Concluído",
+        BookingStatuses.Canceled => "Cancelado",
+        BookingStatuses.NoShow => "Não compareceu",
+        _ => status,
+    };
+
+    private AgendaAuditEntry Audit(AgendaBooking b, string action, string details) => new()
+    {
+        Id = Guid.NewGuid(),
+        BranchId = b.BranchId,
+        BookingId = b.Id,
+        ClientId = b.ClientId,
+        Actor = Truncate(actor.Name, 120),
+        Action = action,
+        Details = Truncate(details, 1000),
+        CreatedAt = DateTime.UtcNow,
+    };
+
+    public async Task<IReadOnlyList<AuditEntryDto>> HistoryAsync(Guid branchId, Guid id, CancellationToken ct = default)
+    {
+        // O agendamento e os que ele substituiu (remarcações), para a história ficar inteira.
+        var ids = new List<Guid> { id };
+        var current = await repo.GetBookingAsync(branchId, id, ct);
+        for (var i = 0; i < 20 && current?.RescheduledFrom is { } prev; i++)
+        {
+            ids.Add(prev);
+            current = await repo.GetBookingAsync(branchId, prev, ct);
+        }
+        var entries = await repo.ListAuditAsync(branchId, ids, ct);
+        return entries
+            .OrderBy(e => e.CreatedAt)
+            .Select(e => new AuditEntryDto(AgendaFormat.LocalDateTime(clock.ToLocal(e.CreatedAt)), e.Actor, e.Action, e.Details, e.BookingId?.ToString()))
+            .ToList();
+    }
+
+    /* ---------- Recorrente ---------- */
+
+    public const int MaxSeries = 52;
+
+    public async Task<SeriesResultDto> CreateSeriesAsync(Guid branchId, SeriesRequest req, CancellationToken ct = default)
+    {
+        if (req.Count is < 2 or > MaxSeries) throw new AgendaValidationException($"Repita de 2 a {MaxSeries} vezes.");
+        if (req.Every is not ("week" or "2weeks" or "month")) throw new AgendaValidationException("Repetição inválida: toda semana, a cada 2 semanas ou todo mês.");
+        var first = AgendaFormat.ParseDate(req.Booking.Date);
+        var seriesId = Guid.NewGuid();
+        var items = new List<SeriesItemDto>();
+        for (var i = 0; i < req.Count; i++)
+        {
+            var date = req.Every switch
+            {
+                "month" => first.AddMonths(i),
+                "2weeks" => first.AddDays(14 * i),
+                _ => first.AddDays(7 * i),
+            };
+            try
+            {
+                BookingDto created;
+                try
+                {
+                    created = await CreateBookingAsync(branchId, req.Booking.CopyFor(date, seriesId, req.Booking.BoxId), ct);
+                }
+                catch (AgendaConflictException) when (!string.IsNullOrEmpty(req.Booking.BoxId))
+                {
+                    // O box de sempre está ocupado nesse dia: tenta outro box no mesmo horário.
+                    created = await CreateBookingAsync(branchId, req.Booking.CopyFor(date, seriesId, null), ct);
+                }
+                items.Add(new SeriesItemDto(AgendaFormat.Date(date), created, null));
+            }
+            catch (AgendaConflictException)
+            {
+                items.Add(new SeriesItemDto(AgendaFormat.Date(date), null, "Horário ocupado ou fora do funcionamento nesse dia."));
+            }
+            catch (AgendaValidationException ex)
+            {
+                items.Add(new SeriesItemDto(AgendaFormat.Date(date), null, ex.Message));
+            }
+        }
+        if (items.All(x => x.Booking is null))
+            throw new AgendaConflictException("Nenhuma data da repetição está livre nesse horário. Escolha outro horário.");
+        return new SeriesResultDto(seriesId.ToString(), items);
+    }
+
+    /// <summary>Cancela este agendamento e os próximos da mesma série que ainda estão marcados. Devolve quantos.</summary>
+    public async Task<int> CancelSeriesAsync(Guid branchId, Guid id, CancellationToken ct = default)
+    {
+        var b = await repo.GetBookingAsync(branchId, id, ct) ?? throw new AgendaNotFoundException("Agendamento não encontrado.");
+        if (b.SeriesId is not { } seriesId) throw new AgendaValidationException("Este agendamento não é de uma série.");
+        var next = (await repo.ListSeriesAsync(branchId, seriesId, ct))
+            .Where(x => x.Status == BookingStatuses.Scheduled && (x.Date > b.Date || (x.Date == b.Date && x.StartMin >= b.StartMin)))
+            .ToList();
+        foreach (var x in next) await SetStatusAsync(branchId, x.Id, BookingStatuses.Canceled, ct);
+        return next.Count;
+    }
+
+    /* ---------- Avaliação ---------- */
+
+    public static string RatingLabel(int rating) => rating >= 5 ? "Ótimo" : rating >= 3 ? "Bom" : "Ruim";
+
+    public async Task<BookingDto> RateAsync(Guid branchId, Guid id, int rating, CancellationToken ct = default)
+    {
+        if (rating is < 1 or > 5) throw new AgendaValidationException("Nota de 1 a 5.");
+        return await repo.InTransactionAsync(branchId, async tx =>
+        {
+            var b = await tx.GetBookingAsync(id) ?? throw new AgendaNotFoundException("Agendamento não encontrado.");
+            if (b.Status != BookingStatuses.Done) throw new AgendaValidationException("Só dá para avaliar um atendimento concluído.");
+            b.Rating = rating;
+            b.RatedAt = DateTime.UtcNow;
+            b.UpdatedAt = b.RatedAt.Value;
+            await tx.UpdateBookingRatingAsync(b);
+            await tx.InsertAuditAsync(Audit(b, "rating", $"Cliente avaliou o atendimento: {RatingLabel(rating)}"));
+            return b.ToDto();
+        }, ct);
+    }
+
+    /* ---------- Pagamento ---------- */
+
+    public async Task<BookingDto> PayAsync(Guid branchId, Guid id, PaymentRequest req, CancellationToken ct = default)
+    {
+        if (!PaymentMethods.All.Contains(req.Method)) throw new AgendaValidationException("Escolha a forma de pagamento.");
+        return await repo.InTransactionAsync(branchId, async tx =>
+        {
+            var b = await tx.GetBookingAsync(id) ?? throw new AgendaNotFoundException("Agendamento não encontrado.");
+            if (b.Status == BookingStatuses.Canceled) throw new AgendaValidationException("Agendamento cancelado não recebe pagamento.");
+            var price = b.Price ?? 0m;
+            var discount = Math.Round(req.Discount ?? 0m, 2, MidpointRounding.AwayFromZero);
+            if (discount < 0 || discount > price) throw new AgendaValidationException("O desconto precisa ficar entre zero e o preço do atendimento.");
+            var amount = Math.Round(req.Amount ?? price - discount, 2, MidpointRounding.AwayFromZero);
+            if (amount is < 0 or > 1_000_000) throw new AgendaValidationException("Valor recebido inválido.");
+            var correction = b.PaidAt is not null;
+            var utc = DateTime.UtcNow;
+            b.Discount = discount == 0 ? null : discount;
+            b.PaymentMethod = req.Method;
+            b.PaidAmount = amount;
+            b.PaidAt = utc;
+            b.UpdatedAt = utc;
+            await tx.UpdateBookingPaymentAsync(b);
+            await tx.InsertAuditAsync(Audit(b, "paid",
+                $"{(correction ? "Pagamento corrigido: " : "Recebido ")}{Money(amount)} em {PaymentMethods.Label(req.Method)}" +
+                (discount > 0 ? $" (desconto de {Money(discount)})" : string.Empty)));
+            return b.ToDto();
+        }, ct);
+    }
+
+    public async Task<BookingDto> UndoPaymentAsync(Guid branchId, Guid id, CancellationToken ct = default) =>
+        await repo.InTransactionAsync(branchId, async tx =>
+        {
+            var b = await tx.GetBookingAsync(id) ?? throw new AgendaNotFoundException("Agendamento não encontrado.");
+            if (b.PaidAt is null) throw new AgendaValidationException("Esse atendimento não tem pagamento registrado.");
+            var was = $"{Money(b.PaidAmount)} em {PaymentMethods.Label(b.PaymentMethod)}";
+            b.Discount = null;
+            b.PaymentMethod = null;
+            b.PaidAmount = null;
+            b.PaidAt = null;
+            b.UpdatedAt = DateTime.UtcNow;
+            await tx.UpdateBookingPaymentAsync(b);
+            await tx.InsertAuditAsync(Audit(b, "payment_undone", $"Pagamento desfeito (era {was})"));
+            return b.ToDto();
+        }, ct);
+
     private static readonly string[] VehicleTypes = ["Hatch", "Sedan", "SUV", "Picape", "Moto"];
     private const int MaxReminderAttempts = 3;
 
@@ -107,11 +293,6 @@ public sealed class AgendaService(IAgendaRepository repo, IAgendaClock clock, IR
 
     public Task<IReadOnlyList<AgendaBranchDto>> BranchesAsync(Guid userId, CancellationToken ct = default) =>
         repo.ListBranchesForUserAsync(userId, ct);
-
-    public async Task EnsureAccessAsync(Guid userId, Guid branchId, CancellationToken ct = default)
-    {
-        if (!await repo.CanAccessBranchAsync(userId, branchId, ct)) throw new AgendaForbiddenException();
-    }
 
     /* ---------- Configuração ---------- */
 
@@ -272,6 +453,7 @@ public sealed class AgendaService(IAgendaRepository repo, IAgendaClock clock, IR
                 Notes = notes,
                 Status = BookingStatuses.Scheduled,
                 Origin = origin,
+                SeriesId = req.SeriesId,
                 CreatedAt = utc,
                 UpdatedAt = utc,
                 Active = true,
@@ -298,10 +480,14 @@ public sealed class AgendaService(IAgendaRepository repo, IAgendaClock clock, IR
                 await tx.UpsertClientAsync(client);
                 booking.ClientId = client.Id;
                 booking.VehicleId = await ResolveVehicleAsync(tx, client, vehicleId, booking, utc);
-                if (req.UsePlan) await ApplyPlanAsync(tx, booking, null);
+                if (req.UsePlan) await ApplyPlanAsync(tx, booking, null, cfg);
             }
 
             await tx.InsertBookingAsync(booking);
+            await tx.InsertAuditAsync(Audit(booking, "created",
+                $"Agendado {(origin == BookingOrigins.WhatsApp ? "pelo WhatsApp" : "no balcão")} para {When(date, booking.StartMin)} · " +
+                $"{BookingExtras.Title(booking.ServiceName, extras)} · " +
+                (booking.ClientPlanId is not null ? "pelo plano de fidelidade" : Money(booking.Price))));
             if (phone.Length > 0 && client is { ReminderOptIn: true })
             {
                 await CreateReminderAsync(tx, cfg, booking, now);
@@ -400,6 +586,9 @@ public sealed class AgendaService(IAgendaRepository repo, IAgendaClock clock, IR
             UpdatedAt = utc,
             Active = true,
         });
+        // Segundo lembrete: só sai se o cliente não tiver respondido o primeiro (conferido no envio).
+        if (ReminderRules.RetryTime(booking.Date, booking.StartMin, sendAt.Value, cfg.Reminder) is { } retryAt)
+            await CreateNoticeAsync(tx, booking, ReminderTypes.ConfirmationRetry, retryAt);
     }
 
     private static async Task CancelPendingRemindersAsync(IAgendaDayTransaction tx, Guid bookingId, IReadOnlyList<string>? types = null)
@@ -426,10 +615,11 @@ public sealed class AgendaService(IAgendaRepository repo, IAgendaClock clock, IR
             await tx.UpdateBookingStatusAsync(id, status, utc);
             b.Status = status;
             b.UpdatedAt = utc;
+            if (previous != status) await tx.InsertAuditAsync(Audit(b, "status", $"{StatusLabel(previous)} → {StatusLabel(status)}"));
             if (!BookingStatuses.IsActive(status)) await CancelPendingRemindersAsync(tx, id);
             // Atendimento começou ou terminou: lembrete e confirmação que ainda não saíram perdem o sentido.
             else if (status is BookingStatuses.InProgress or BookingStatuses.Done)
-                await CancelPendingRemindersAsync(tx, id, [ReminderTypes.ConfirmationD1, ReminderTypes.Booked]);
+                await CancelPendingRemindersAsync(tx, id, [ReminderTypes.ConfirmationD1, ReminderTypes.ConfirmationRetry, ReminderTypes.Booked]);
             if (status == BookingStatuses.Scheduled && b.Phone.Length > 0)
             {
                 var hasLive = (await tx.RemindersOfBookingAsync(id)).Any(r => r.Type == ReminderTypes.ConfirmationD1 && r.Status != ReminderStatuses.Canceled);
@@ -442,6 +632,19 @@ public sealed class AgendaService(IAgendaRepository repo, IAgendaClock clock, IR
                 var sent = (await tx.RemindersOfBookingAsync(id)).Any(r => r.Type == ReminderTypes.Ready);
                 var client = await tx.GetClientAsync(AgendaFormat.PhoneVariants(b.Phone));
                 if (!sent && client is { ReminderOptIn: true }) await CreateNoticeAsync(tx, b, ReminderTypes.Ready, now);
+            }
+            if (status == BookingStatuses.Done && previous != BookingStatuses.Done && cfg.Notify.Review && b.Phone.Length > 0)
+            {
+                // "Como foi o atendimento?": algumas horas depois; à noite, fica para as 10h do dia seguinte.
+                var asked = (await tx.RemindersOfBookingAsync(id)).Any(r => r.Type == ReminderTypes.Review);
+                var client = await tx.GetClientAsync(AgendaFormat.PhoneVariants(b.Phone));
+                if (!asked && client is { ReminderOptIn: true })
+                {
+                    var at = now.AddHours(Math.Clamp(cfg.Notify.ReviewDelayHours, 0, 48));
+                    if (at.Hour >= 21) at = at.Date.AddDays(1).AddHours(10);
+                    else if (at.Hour < 8) at = at.Date.AddHours(10);
+                    await CreateNoticeAsync(tx, b, ReminderTypes.Review, at);
+                }
             }
             return b.ToDto();
         }, ct);
@@ -493,6 +696,11 @@ public sealed class AgendaService(IAgendaRepository repo, IAgendaClock clock, IR
                 RescheduledFrom = old.Id,
                 ClientId = old.ClientId,
                 VehicleId = old.VehicleId,
+                // Pagamento adiantado vai junto.
+                Discount = old.Discount,
+                PaymentMethod = old.PaymentMethod,
+                PaidAmount = old.PaidAmount,
+                PaidAt = old.PaidAt,
                 CreatedAt = utc,
                 UpdatedAt = utc,
                 Active = true,
@@ -505,9 +713,11 @@ public sealed class AgendaService(IAgendaRepository repo, IAgendaClock clock, IR
                 // A vez do mês antigo foi devolvida com o cancelamento; no dia novo o plano precisa valer e ter vez sobrando.
                 created.ClientPlanId = null;
                 created.Price = BookingExtras.Total(service.PriceFor(old.VehicleType), extras);
-                await ApplyPlanAsync(tx, created, planId);
+                await ApplyPlanAsync(tx, created, planId, cfg);
             }
             await tx.InsertBookingAsync(created);
+            await tx.InsertAuditAsync(Audit(old, "rescheduled", $"Remarcado para {When(date, req.Start)}"));
+            await tx.InsertAuditAsync(Audit(created, "rescheduled", $"Remarcado de {When(old.Date, old.StartMin)} para {When(date, req.Start)}"));
             if (created.Phone.Length > 0)
             {
                 var client = await tx.GetClientAsync(AgendaFormat.PhoneVariants(created.Phone));
@@ -534,6 +744,7 @@ public sealed class AgendaService(IAgendaRepository repo, IAgendaClock clock, IR
                 throw new AgendaValidationException("Só dá para editar um agendamento marcado ou em atendimento.");
             var utc = DateTime.UtcNow;
             var oldType = b.VehicleType;
+            var before = (Title: BookingExtras.Title(b.ServiceName, BookingExtras.Parse(b.ExtrasJson)), b.Price, b.Vehicle, b.Plate, b.VehicleType, b.Notes, b.EndMin);
             var client = b.ClientId is { } cid ? await tx.GetClientByIdAsync(cid) : null;
 
             if (vehicleId is { } vid)
@@ -588,18 +799,37 @@ public sealed class AgendaService(IAgendaRepository repo, IAgendaClock clock, IR
                 b.Price = BookingExtras.Total(service.PriceFor(b.VehicleType), extras);
                 // O plano é refeito: pode passar a cobrir (ou deixar de cobrir) o novo serviço ou carro.
                 b.ClientPlanId = null;
-                if (client is not null) await ApplyPlanAsync(tx, b, null);
+                if (client is not null) await ApplyPlanAsync(tx, b, null, cfg);
             }
             if (req.Price is { } manual) b.Price = Math.Round(manual, 2, MidpointRounding.AwayFromZero);
+            // Desconto dado antes não passa do preço novo.
+            if (b.Discount is { } d && d > (b.Price ?? 0m))
+            {
+                b.Discount = b.Price is > 0 ? b.Price : null;
+                await tx.UpdateBookingPaymentAsync(b);
+            }
             b.UpdatedAt = utc;
             await tx.UpdateBookingAsync(b);
+
+            var changes = new List<string>();
+            var title = BookingExtras.Title(b.ServiceName, BookingExtras.Parse(b.ExtrasJson));
+            if (title != before.Title) changes.Add($"serviço: {before.Title} → {title}");
+            if (b.EndMin != before.EndMin) changes.Add($"fim: {AgendaFormat.Hm(before.EndMin)} → {AgendaFormat.Hm(b.EndMin)}");
+            if (b.Price != before.Price) changes.Add($"preço: {Money(before.Price)} → {Money(b.Price)}");
+            if (b.VehicleType != before.VehicleType) changes.Add($"tipo: {before.VehicleType} → {b.VehicleType}");
+            if (b.Vehicle != before.Vehicle) changes.Add($"veículo: {(before.Vehicle.Length == 0 ? "—" : before.Vehicle)} → {(b.Vehicle.Length == 0 ? "—" : b.Vehicle)}");
+            if (b.Plate != before.Plate) changes.Add($"placa: {(before.Plate.Length == 0 ? "—" : before.Plate)} → {(b.Plate.Length == 0 ? "—" : b.Plate)}");
+            if (b.Notes != before.Notes) changes.Add("observações");
+            if (changes.Count > 0) await tx.InsertAuditAsync(Audit(b, "edited", "Editado: " + string.Join("; ", changes)));
             return b.ToDto();
         }, ct);
     }
 
     public async Task DeleteBookingAsync(Guid branchId, Guid id, CancellationToken ct = default)
     {
+        var b = await repo.GetBookingAsync(branchId, id, ct);
         if (!await repo.DeleteBookingAsync(branchId, id, ct)) throw new AgendaNotFoundException("Agendamento não encontrado.");
+        if (b is not null) await repo.InsertAuditAsync(Audit(b, "deleted", "Registro excluído"), ct);
     }
 
     public Task<int> PruneAsync(Guid branchId, string before, CancellationToken ct = default) =>
@@ -668,6 +898,9 @@ public sealed class AgendaService(IAgendaRepository repo, IAgendaClock clock, IR
                 var stillValid = b is not null && client is { ReminderOptIn: true } && r.Type switch
                 {
                     ReminderTypes.Ready => b.Status == BookingStatuses.Done,
+                    ReminderTypes.Review => b.Status == BookingStatuses.Done && b.Rating is null,
+                    ReminderTypes.ConfirmationRetry => b.Status == BookingStatuses.Scheduled && startsAt > now
+                        && !(await tx.RemindersOfBookingAsync(b.Id)).Any(x => x.Answer is not null),
                     _ => b.Status == BookingStatuses.Scheduled && startsAt > now,
                 };
                 if (!stillValid)
@@ -723,7 +956,7 @@ public sealed class AgendaService(IAgendaRepository repo, IAgendaClock clock, IR
         var at = string.IsNullOrWhiteSpace(req.Em) ? clock.NowLocal : AgendaFormat.ParseLocalDateTime(req.Em);
         return await repo.InTransactionAsync(branchId, async tx =>
         {
-            if (await tx.GetBookingAsync(bookingId) is null) throw new AgendaNotFoundException("Agendamento não encontrado.");
+            var booking = await tx.GetBookingAsync(bookingId) ?? throw new AgendaNotFoundException("Agendamento não encontrado.");
             var r = (await tx.RemindersOfBookingAsync(bookingId))
                 .Where(x => x.Status is not (ReminderStatuses.Canceled or ReminderStatuses.Pending))
                 .OrderByDescending(x => x.ScheduledFor)
@@ -734,6 +967,13 @@ public sealed class AgendaService(IAgendaRepository repo, IAgendaClock clock, IR
             r.Status = ReminderStatuses.Advance(r.Status, ReminderStatuses.Read);
             r.UpdatedAt = DateTime.UtcNow;
             await tx.UpdateReminderAsync(r);
+            var answer = req.Resposta switch
+            {
+                ReminderAnswers.Confirmed => "confirmou",
+                ReminderAnswers.Canceled => "pediu para cancelar",
+                _ => "pediu para remarcar",
+            };
+            await tx.InsertAuditAsync(Audit(booking, "answer", $"Cliente {answer} pelo lembrete"));
             return r.ToDto();
         }, ct);
     }
@@ -1046,6 +1286,7 @@ public sealed class AgendaService(IAgendaRepository repo, IAgendaClock clock, IR
         IEnumerable<AgendaPlanPayment> payments, IEnumerable<PlanUpcomingRow> upcoming, DateTime today)
     {
         var used = usage.Where(u => u.ClientPlanId == p.Id).ToDictionary(u => u.ServiceId, u => u.Used);
+        var charges = LoyaltyRules.Charges(p, payments, today, cfg.PlanBilling.GraceDays);
         return new ClientPlanDto(
             p.Id.ToString(),
             p.ClientId.ToString(),
@@ -1062,8 +1303,10 @@ public sealed class AgendaService(IAgendaRepository repo, IAgendaClock clock, IR
             LoyaltyRules.ParseItems(p.ItemsJson)
                 .Select(i => new PlanUsageDto(i.ServiceId, ServiceName(cfg, i.ServiceId), i.TimesPerMonth, used.GetValueOrDefault(i.ServiceId)))
                 .ToList(),
-            LoyaltyRules.Charges(p, payments, today),
-            upcoming.FirstOrDefault(u => u.ClientPlanId == p.Id)?.Bookings ?? 0);
+            charges,
+            upcoming.FirstOrDefault(u => u.ClientPlanId == p.Id)?.Bookings ?? 0,
+            LoyaltyRules.DueDayOf(p),
+            cfg.PlanBilling.SuspendOverdue && p.EndDate is null && charges.Any(c => c.Overdue));
     }
 
     public async Task<IReadOnlyList<ClientPlanDto>> ListClientPlansAsync(Guid branchId, Guid clientId, string? date, CancellationToken ct = default)
@@ -1089,6 +1332,10 @@ public sealed class AgendaService(IAgendaRepository repo, IAgendaClock clock, IR
         if (plan is null) return null;
         var item = LoyaltyRules.ParseItems(plan.ItemsJson).FirstOrDefault(i => i.ServiceId == serviceId);
         if (item is null) return null;
+        var (_, cfg) = await LoadConfigAsync(branchId, ct);
+        if (cfg.PlanBilling.SuspendOverdue &&
+            LoyaltyRules.IsOverdue(plan, await repo.ListPlanPaymentsAsync(branchId, clientId, ct), clock.NowLocal.Date, cfg.PlanBilling.GraceDays))
+            return null;
         var (from, to) = LoyaltyRules.Month(day);
         var used = (await repo.PlanUsageAsync(branchId, [plan.Id], from, to, ct))
             .Where(u => u.ClientPlanId == plan.Id && u.ServiceId == serviceId)
@@ -1116,6 +1363,7 @@ public sealed class AgendaService(IAgendaRepository repo, IAgendaClock clock, IR
         var form = ValidatePlanForm(cfg, req.Name, req.DiscountPercent, req.Items);
         var planId = OptionalId(req.PlanId, "Plano");
         var vehicleId = OptionalId(req.VehicleId, "Carro");
+        if (req.DueDay is { } dd && dd is < 1 or > 28) throw new AgendaValidationException("Dia do vencimento: de 1 a 28.");
         if (planId is { } pid && await repo.GetLoyaltyPlanAsync(branchId, pid, ct) is null && id is null)
             throw new AgendaValidationException("Plano não encontrado. Ele pode ter sido excluído; escolha outro.");
         var today = clock.NowLocal.Date;
@@ -1175,6 +1423,8 @@ public sealed class AgendaService(IAgendaRepository repo, IAgendaClock clock, IR
             plan.VehicleType = vehicleType;
             plan.FullPrice = full.Value;
             plan.Price = LoyaltyRules.ApplyDiscount(full.Value, form.DiscountPercent);
+            if (req.DueDay is { } due) plan.DueDay = due;
+            else if (plan.DueDay == 0) plan.DueDay = Math.Min(plan.StartDate.Day, 28);
             plan.UpdatedAt = utc;
             await tx.UpsertClientPlanAsync(plan);
             return plan;
@@ -1265,7 +1515,7 @@ public sealed class AgendaService(IAgendaRepository repo, IAgendaClock clock, IR
     /// (preço zero: o cliente paga a mensalidade). Com <paramref name="onlyPlanId"/>, só esse plano serve (remarcação).
     /// Sem plano que cubra, o agendamento fica como está (preço normal).
     /// </summary>
-    private static async Task ApplyPlanAsync(IAgendaDayTransaction tx, AgendaBooking booking, Guid? onlyPlanId)
+    private async Task ApplyPlanAsync(IAgendaDayTransaction tx, AgendaBooking booking, Guid? onlyPlanId, AgendaConfigModel cfg)
     {
         if (booking.ClientId is not { } clientId) return;
         var plans = await tx.ClientPlansAsync(clientId);
@@ -1273,6 +1523,10 @@ public sealed class AgendaService(IAgendaRepository repo, IAgendaClock clock, IR
             ? plans.FirstOrDefault(p => p.Id == pid && LoyaltyRules.Covers(p, booking.Date))
             : LoyaltyRules.PlanFor(plans, booking.VehicleId, booking.VehicleType, booking.Date);
         if (plan is null) return;
+        // Mensalidade atrasada suspende o plano (se a estética quiser): cobra normal até pagar.
+        if (cfg.PlanBilling.SuspendOverdue &&
+            LoyaltyRules.IsOverdue(plan, await tx.PlanPaymentsAsync(plan.Id), clock.NowLocal.Date, cfg.PlanBilling.GraceDays))
+            return;
         var item = LoyaltyRules.ParseItems(plan.ItemsJson).FirstOrDefault(i => i.ServiceId == booking.ServiceId);
         if (item is null) return;
 

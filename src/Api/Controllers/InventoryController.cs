@@ -9,7 +9,7 @@ namespace Api.Controllers;
 /// <summary>Operações de estoque, vendas, transferências e produção.</summary>
 [ApiController]
 [Route("api/[controller]")]
-[Authorize]
+[Authorize(Roles = Domain.Entities.UserRoles.Owner)]
 public sealed class InventoryController : ControllerBase
 {
     private readonly IInventoryService _inventory;
