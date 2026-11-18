@@ -22,6 +22,53 @@ public sealed class AgendaConfigModel
     public BotSettingsModel Bot { get; set; } = new();
     public TermsModel? Terms { get; set; }
 
+    /// <summary>Textos do bot e do lembrete (Ajustes → Bot e mensagens). Vazio = padrão.</summary>
+    public BotTextsModel Texts { get; set; } = new();
+
+    /// <summary>Por tipo ("SUV"): nome mostrado e se está ativo. Ausente = nome padrão e ativo.</summary>
+    public Dictionary<string, VehicleTypeConfigModel> VehicleTypes { get; set; } = [];
+
+    /// <summary>Tipos de veículo, na ordem em que aparecem para o cliente.</summary>
+    public static readonly IReadOnlyList<string> AllVehicleTypes = ["Hatch", "Sedan", "SUV", "Picape", "Moto"];
+
+    public bool VehicleEnabled(string type) => !VehicleTypes.TryGetValue(type, out var c) || c.Enabled;
+
+    public string VehicleLabel(string type) =>
+        VehicleTypes.TryGetValue(type, out var c) && !string.IsNullOrWhiteSpace(c.Label) ? c.Label! : type;
+
+    /// <summary>Tipos ativos (todos, se a configuração desligou todos).</summary>
+    public IReadOnlyList<string> EnabledVehicleTypes
+    {
+        get
+        {
+            var list = AllVehicleTypes.Where(VehicleEnabled).ToList();
+            return list.Count == 0 ? AllVehicleTypes : list;
+        }
+    }
+
+    private static readonly Dictionary<string, string> DefaultStatusLabels = new()
+    {
+        ["scheduled"] = "Agendado",
+        ["inProgress"] = "Em atendimento",
+        ["done"] = "Concluído",
+        ["late"] = "Atrasado",
+        ["canceled"] = "Cancelado",
+        ["noShow"] = "Não compareceu",
+    };
+
+    /// <summary>Nome do status do agendamento ("scheduled", "in_progress"…) como a filial chama.</summary>
+    public string StatusText(string bookingStatus)
+    {
+        var key = bookingStatus switch
+        {
+            BookingStatusKeys.InProgress => "inProgress",
+            BookingStatusKeys.NoShow => "noShow",
+            _ => bookingStatus,
+        };
+        if (Terms?.StatusLabels is { } custom && custom.TryGetValue(key, out var label) && !string.IsNullOrWhiteSpace(label)) return label;
+        return DefaultStatusLabels.GetValueOrDefault(key, bookingStatus);
+    }
+
     public ServiceModel? ServiceById(string? id) => Services.FirstOrDefault(s => s.Id == id);
     public BoxModel? BoxById(string? id) => Boxes.FirstOrDefault(b => b.Id == id);
 
@@ -117,12 +164,56 @@ public sealed class ReminderPolicyModel
 public sealed class BotSettingsModel
 {
     public int DaysAhead { get; set; } = 7;
+    public int SessionTimeoutMin { get; set; } = 30;
+    public int MaxInvalidAttempts { get; set; } = 3;
     public int MinNoticeMin { get; set; } = 60;
     public int CancelMinHours { get; set; }
+    public bool AskVehicle { get; set; } = true;
+    public bool ShowPrices { get; set; } = true;
 }
 
 public sealed class TermsModel
 {
     public string BoxSingular { get; set; } = "Box";
     public string BoxPlural { get; set; } = "Boxes";
+
+    /// <summary>Nomes de status trocados em Ajustes (chave: scheduled, inProgress, done, late, canceled, noShow).</summary>
+    public Dictionary<string, string>? StatusLabels { get; set; }
+}
+
+public sealed class VehicleTypeConfigModel
+{
+    public string? Label { get; set; }
+    public bool Enabled { get; set; } = true;
+}
+
+/// <summary>Status do agendamento como texto (espelha Domain.Agenda.BookingStatuses).</summary>
+internal static class BookingStatusKeys
+{
+    public const string InProgress = "in_progress";
+    public const string NoShow = "no_show";
+}
+
+/// <summary>Textos do bot. Em branco no JSON = texto padrão (mesmos do app).</summary>
+public sealed class BotTextsModel
+{
+    public const string DefaultGreeting = "Olá, {nome}! 👋 Sou o assistente de agendamento da *{estetica}*.";
+    public const string DefaultBooked = "Agendado! ✅\n🚗 {servico}\n📅 {data}, das {hora} às {fim}";
+    public const string DefaultConfirmed = "Confirmado, te esperamos! 🚗✨\n📅 {data} às {hora}\n🧽 {servico}";
+    public const string DefaultAttendant = "Certo! Já avisei a equipe, alguém continua a conversa por aqui em instantes. 🙋\nPara voltar ao agendamento automático, digite *menu*.";
+    public const string DefaultReminder = "Olá {nome}! Lembrete do seu horário:\n📅 {data} às {hora}\n🚗 {servico}\n\nVocê confirma?";
+
+    public string? Greeting { get; set; }
+    public string? Booked { get; set; }
+    public string? Confirmed { get; set; }
+    public string? Attendant { get; set; }
+    public string? Reminder { get; set; }
+
+    private static string Or(string? value, string fallback) => string.IsNullOrWhiteSpace(value) ? fallback : value;
+
+    public string GreetingText => Or(Greeting, DefaultGreeting);
+    public string BookedText => Or(Booked, DefaultBooked);
+    public string ConfirmedText => Or(Confirmed, DefaultConfirmed);
+    public string AttendantText => Or(Attendant, DefaultAttendant);
+    public string ReminderText => Or(Reminder, DefaultReminder);
 }

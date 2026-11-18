@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Api.Agenda;
 using Application.Agenda;
+using Application.Bot;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -266,4 +267,74 @@ public sealed class AgendaController(IAgendaService agenda) : ControllerBase
     [HttpPut("{branchId:guid}/clientes/{telefone}")]
     public async Task<ActionResult<ClientDto>> UpsertClient(Guid branchId, string telefone, [FromBody] ClientRequest request, CancellationToken ct) =>
         Ok(await agenda.UpsertClientAsync(branchId, telefone, request, ct));
+
+    /* ---------- Bot do WhatsApp ---------- */
+
+    /// <summary>
+    /// Conversa com o bot sem WhatsApp: a mensagem passa pelo mesmo fluxo do webhook (sessão, agenda, ids
+    /// repetidos) e as respostas voltam no corpo em vez de irem para o cliente.
+    /// </summary>
+    [HttpPost("{branchId:guid}/bot/mensagens")]
+    public async Task<ActionResult<BotSimulationResponse>> SimulateBot(
+        Guid branchId, [FromBody] BotSimulationRequest request, [FromServices] BookingFlow flow, [FromServices] IBotStore store, CancellationToken ct)
+    {
+        var phone = AgendaFormat.NormalizePhone(request.Telefone);
+        if (phone.Length < 10) throw new AgendaValidationException("Telefone inválido.");
+        var kind = request.Tipo ?? (request.OpcaoId is null ? "text" : "interactive");
+        var message = new IncomingMessage(
+            string.IsNullOrWhiteSpace(request.Id) ? $"sim.{Guid.NewGuid():N}" : request.Id,
+            phone,
+            DateTime.UtcNow,
+            kind,
+            request.Texto,
+            request.OpcaoId,
+            request.OpcaoTitulo,
+            request.Nome);
+        var channel = new CaptureMessagingChannel();
+        await flow.HandleAsync(branchId, message, channel, ct);
+        var session = await store.GetSessionAsync(branchId, phone, ct);
+        return Ok(new BotSimulationResponse(session?.State ?? BotStates.Idle, channel.Sent.Select(m => m.ToDto()).ToList()));
+    }
+
+    /// <summary>Conversa do bot com o número: passo atual e as últimas mensagens (entrada e saída).</summary>
+    [HttpGet("{branchId:guid}/bot/conversas/{telefone}")]
+    public async Task<ActionResult<BotConversationDto>> BotConversation(
+        Guid branchId, string telefone, [FromServices] IBotStore store, [FromQuery] int limite = 50, CancellationToken ct = default)
+    {
+        var phones = AgendaFormat.PhoneVariants(telefone);
+        string state = BotStates.Idle;
+        foreach (var p in phones)
+        {
+            if (await store.GetSessionAsync(branchId, p, ct) is { } s)
+            {
+                state = s.State;
+                break;
+            }
+        }
+        var messages = await store.ListMessagesAsync(branchId, phones, limite, ct);
+        return Ok(new BotConversationDto(state, messages
+            .Select(m => new BotLogDto(m.Phone, m.Direction, m.Kind, m.Body, m.WamId,
+                DateTime.SpecifyKind(m.CreatedAt, DateTimeKind.Utc).ToString("O", System.Globalization.CultureInfo.InvariantCulture)))
+            .ToList()));
+    }
+
+    /// <summary>O template do lembrete a cadastrar no WhatsApp Manager, com o texto atual de Ajustes.</summary>
+    [HttpGet("{branchId:guid}/bot/modelo-lembrete")]
+    public async Task<ActionResult<ReminderTemplateDto>> ReminderTemplate(Guid branchId, CancellationToken ct)
+    {
+        var cfg = AgendaConfigModel.Parse(await agenda.GetConfigAsync(branchId, ct));
+        var text = cfg.Texts.ReminderText;
+        var sample = new BookingDto(
+            Guid.Empty.ToString(), AgendaFormat.Date(DateTime.Today.AddDays(1)), 9 * 60, 10 * 60, cfg.Boxes.FirstOrDefault()?.Id ?? string.Empty,
+            string.Empty, "Lavagem completa", 80m, "Hatch", "Onix", "ABC1D23", "Maria Silva", "5511987654321", string.Empty,
+            "scheduled", "whatsapp", string.Empty, string.Empty, null, null, null, null);
+        return Ok(new ReminderTemplateDto(
+            BotTemplates.ReminderName,
+            BotTemplates.DefaultLanguage,
+            "UTILITY",
+            BotTemplates.MetaBody(text),
+            BotFormat.Variables(text),
+            BotTemplates.ReminderButtons,
+            BotTemplates.Reminder(sample, cfg).Preview));
+    }
 }

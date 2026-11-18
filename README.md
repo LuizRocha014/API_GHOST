@@ -100,8 +100,17 @@ Rotas em `api/agenda` (todas com JWT), usadas pelo app Flutter *Agenda da Estét
 
 A reserva é atômica: a transação pega um lock nomeado do dia da filial (`sp_getapplock`) e revalida o horário, e o
 lembrete D-1 entra na mesma transação. O `ReminderWorker` envia os lembretes vencidos a cada minuto
-(`Agenda:ReminderWorker`). Sem WhatsApp configurado, o envio só é registrado no log (`LocalReminderSender`). As datas da
-agenda são do fuso `Agenda:TimeZone` (padrão `America/Sao_Paulo`), então a API pode rodar num servidor em UTC.
+(`Agenda:ReminderWorker`) pelo template do WhatsApp; com `WhatsApp:Mode` = `Log` (padrão) o envio só é registrado no log
+e na conversa. As datas da agenda são do fuso `Agenda:TimeZone` (padrão `America/Sao_Paulo`), então a API pode rodar num
+servidor em UTC.
+
+### Bot do WhatsApp
+
+O cliente agenda sozinho pelo WhatsApp (serviço, tipo do veículo, dia, horário, placa) e responde o lembrete com
+Confirmar, Remarcar ou Cancelar. Webhook em `api/whatsapp/webhook` (assinatura `X-Hub-Signature-256` conferida), fila
+em memória e o `BotWorker` processando; sessão, ids já processados e conversa ficam nas tabelas `BotSessions`,
+`BotProcessedMessages` e `BotMessages`. Sem WhatsApp, `POST api/agenda/{filial}/bot/mensagens` conversa com o bot pela
+API. Configuração, passo a passo da Meta, túnel para desenvolvimento e limitações: [`docs/whatsapp-bot.md`](docs/whatsapp-bot.md).
 
 Para o app no celular alcançar a API pela rede, use o perfil `rede` (escuta em todas as interfaces, IPv4 e IPv6, na porta 5000):
 
@@ -116,6 +125,10 @@ Com a API no ar, `python infra/e2e/agenda_e2e.py` passa pelas rotas da agenda co
 renovação, filiais, ajustes, disponibilidade, 6 reservas simultâneas no mesmo horário (1 vira 201, 5 viram 409),
 bloqueio, lembrete com envio local, resposta, remarcação, cadastro de clientes (carros, VIP, histórico, agendar escolhendo
 cliente e carro) e erros 400/401/403/404/409. Apaga o que cria.
+
+`python infra/e2e/bot_e2e.py` faz o mesmo com o bot do WhatsApp (64 verificações: conversa completa pelo simulador e
+webhook assinado, com status de entrega e botão do template). Precisa dos segredos de desenvolvimento do WhatsApp nos
+user-secrets; ver [`docs/whatsapp-bot.md`](docs/whatsapp-bot.md).
 
 ## Documentação dos endpoints
 

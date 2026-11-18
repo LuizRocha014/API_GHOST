@@ -1,8 +1,5 @@
 using Application.Abstractions;
-using Application.Agenda;
-using Domain.Agenda;
 using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.Agenda;
 
@@ -37,20 +34,4 @@ public sealed class AgendaClock : IAgendaClock
     }
 
     public DateTime NowLocal => DateTime.SpecifyKind(TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, _zone), DateTimeKind.Unspecified);
-}
-
-/// <summary>
-/// Envio do lembrete sem WhatsApp real: registra no log e devolve um id local. Quando a integração
-/// com a WhatsApp Cloud API existir, troque o registro deste serviço no DependencyInjection.
-/// </summary>
-public sealed class LocalReminderSender(ILogger<LocalReminderSender> logger) : IReminderSender
-{
-    public Task<string> SendAsync(AgendaBooking booking, AgendaConfigModel config, CancellationToken ct = default)
-    {
-        var wamId = $"wamid.local.{Guid.NewGuid():N}";
-        logger.LogInformation(
-            "Lembrete D-1 (sem WhatsApp configurado) para {Phone}: {Service} em {Date:yyyy-MM-dd} às {Time} ({WamId})",
-            booking.Phone, booking.ServiceName, booking.Date, AgendaFormat.Hm(booking.StartMin), wamId);
-        return Task.FromResult(wamId);
-    }
 }

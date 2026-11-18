@@ -35,6 +35,9 @@ public sealed class AppDbContext : DbContext
     public DbSet<AgendaLoyaltyPlan> AgendaLoyaltyPlans => Set<AgendaLoyaltyPlan>();
     public DbSet<AgendaClientPlan> AgendaClientPlans => Set<AgendaClientPlan>();
     public DbSet<AgendaPlanPayment> AgendaPlanPayments => Set<AgendaPlanPayment>();
+    public DbSet<BotSessionRecord> BotSessions => Set<BotSessionRecord>();
+    public DbSet<BotProcessedMessage> BotProcessedMessages => Set<BotProcessedMessage>();
+    public DbSet<BotMessage> BotMessages => Set<BotMessage>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -363,6 +366,43 @@ public sealed class AppDbContext : DbContext
             e.HasIndex(x => new { x.ClientPlanId, x.Month }).IsUnique().HasFilter("[Active] = 1");
             e.HasIndex(x => new { x.BranchId, x.ClientId });
             e.HasOne<AgendaClientPlan>().WithMany().HasForeignKey(x => x.ClientPlanId).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<BotSessionRecord>(e =>
+        {
+            e.ToTable("BotSessions");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Phone).HasMaxLength(AgendaService.MaxPhoneLength);
+            e.Property(x => x.State).HasMaxLength(32);
+            e.Property(x => x.DataJson).HasColumnType("nvarchar(max)");
+            e.Property(x => x.CreatedAt).HasColumnType("datetime2");
+            e.Property(x => x.UpdatedAt).HasColumnType("datetime2");
+            e.HasIndex(x => new { x.BranchId, x.Phone }).IsUnique();
+            e.HasOne<Branch>().WithMany().HasForeignKey(x => x.BranchId).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<BotProcessedMessage>(e =>
+        {
+            e.ToTable("BotProcessedMessages");
+            e.HasKey(x => x.MessageId);
+            e.Property(x => x.MessageId).HasMaxLength(128);
+            e.Property(x => x.ReceivedAt).HasColumnType("datetime2");
+            e.HasIndex(x => x.ReceivedAt);
+        });
+
+        modelBuilder.Entity<BotMessage>(e =>
+        {
+            e.ToTable("BotMessages");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Phone).HasMaxLength(AgendaService.MaxPhoneLength);
+            e.Property(x => x.Direction).HasMaxLength(8);
+            e.Property(x => x.Kind).HasMaxLength(16);
+            e.Property(x => x.Body).HasMaxLength(4096);
+            e.Property(x => x.WamId).HasMaxLength(128);
+            e.Property(x => x.CreatedAt).HasColumnType("datetime2");
+            e.Property(x => x.UpdatedAt).HasColumnType("datetime2");
+            e.HasIndex(x => new { x.BranchId, x.Phone, x.CreatedAt });
+            e.HasIndex(x => x.CreatedAt);
         });
     }
 }

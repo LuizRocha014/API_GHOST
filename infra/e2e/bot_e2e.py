@@ -1,0 +1,497 @@
+"""Teste ponta a ponta do bot do WhatsApp na API_GHOST rodando com banco real.
+
+Uso: python infra/e2e/bot_e2e.py [http://127.0.0.1:5000]
+
+Conversa pelo simulador (POST /api/agenda/{filial}/bot/mensagens), que passa pelo mesmo fluxo do webhook, e
+testa o webhook de verdade (verificação, assinatura X-Hub-Signature-256, id repetido, status de entrega e botão
+do template). Para a parte do webhook, a API precisa de WhatsApp:AppSecret, WhatsApp:VerifyToken e
+WhatsApp:Numbers:0 (PhoneNumberId → primeira filial) nos user-secrets; o script lê de lá (ou das variáveis
+WHATSAPP_APP_SECRET, WHATSAPP_VERIFY_TOKEN e WHATSAPP_PHONE_NUMBER_ID) e não imprime os valores.
+
+Usa a primeira filial, troca os ajustes durante o teste e devolve os originais no fim. Apaga os agendamentos
+e clientes dos telefones de teste (55119900001xx).
+"""
+import datetime as dt
+import hashlib
+import hmac
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+
+sys.stdout.reconfigure(encoding="utf-8")
+
+BASE = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:5000"
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+TODAY = dt.date.today()
+RANGE_FROM = (TODAY - dt.timedelta(days=1)).isoformat()
+RANGE_TO = (TODAY + dt.timedelta(days=20)).isoformat()
+
+
+def weekday_from(start):
+    d = start
+    while d.weekday() >= 5:
+        d += dt.timedelta(days=1)
+    return d
+
+
+# Dia útil a partir de depois de amanhã: longe do prazo mínimo para cancelar e com lembrete D-1 no futuro.
+DAY = weekday_from(TODAY + dt.timedelta(days=3)).isoformat()
+DISPATCH_UNTIL = (dt.date.fromisoformat(DAY) + dt.timedelta(days=1)).isoformat() + "T00:00:00"
+PHONES = {k: f"55119900001{n:02d}" for n, k in enumerate(
+    ["feliz", "digitado", "duplicado", "atendente", "cancela", "conflito", "lembrete", "outro", "optout", "audio",
+     "webhook", "desconhecido", "entrega"], start=1)}
+results = []
+
+
+def call(method, path, body=None, token=None):
+    data = None if body is None else json.dumps(body).encode()
+    req = urllib.request.Request(BASE + path, data=data, method=method)
+    req.add_header("Content-Type", "application/json")
+    if token:
+        req.add_header("Authorization", "Bearer " + token)
+    return _send(req)
+
+
+def raw(method, path, data=None, headers=None):
+    req = urllib.request.Request(BASE + path, data=data, method=method)
+    for k, v in (headers or {}).items():
+        req.add_header(k, v)
+    return _send(req)
+
+
+def _send(req):
+    try:
+        with urllib.request.urlopen(req, timeout=90) as r:
+            status, body = r.status, r.read()
+    except urllib.error.HTTPError as e:
+        status, body = e.code, e.read()
+    text = body.decode("utf-8", "replace")
+    try:
+        return status, (json.loads(text) if text else None)
+    except ValueError:
+        return status, text
+
+
+def check(name, cond, detail=""):
+    results.append((name, bool(cond)))
+    print(("OK   " if cond else "FAIL ") + name + (f"  [{detail}]" if detail and not cond else ""))
+    return cond
+
+
+def user_secrets():
+    """Lê só as chaves do WhatsApp dos user-secrets da API (sem imprimir)."""
+    out = {}
+    try:
+        import re
+        with open(os.path.join(ROOT, "src", "Api", "Api.csproj"), encoding="utf-8") as f:
+            sid = re.search(r"<UserSecretsId>([^<]+)</UserSecretsId>", f.read())
+        base = os.environ.get("APPDATA") or os.path.join(os.path.expanduser("~"), ".microsoft", "usersecrets")
+        path = os.path.join(base, "Microsoft", "UserSecrets", sid.group(1), "secrets.json") if os.environ.get("APPDATA") \
+            else os.path.join(base, sid.group(1), "secrets.json")
+        with open(path, encoding="utf-8-sig") as f:
+            out = {k: v for k, v in json.load(f).items() if k.startswith("WhatsApp:")}
+        if out:
+            return out
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        p = subprocess.run(["dotnet", "user-secrets", "list", "--project", os.path.join(ROOT, "src", "Api")],
+                           capture_output=True, text=True, encoding="utf-8", timeout=180)
+        for line in p.stdout.splitlines():
+            if line.startswith("WhatsApp:") and " = " in line:
+                k, v = line.split(" = ", 1)
+                out[k.strip()] = v.strip()
+    except Exception as e:  # noqa: BLE001
+        print("     (não consegui ler os user-secrets:", type(e).__name__, ")")
+    return out
+
+
+# ---- login e filial
+s, p = call("POST", "/api/auth/login", {"username": "admin", "password": "Admin@123"})
+if not check("login admin", s == 200 and p and p.get("accessToken"), f"{s} {p}"):
+    sys.exit(1)
+tok = p["accessToken"]
+s, branches = call("GET", "/api/agenda/filiais", token=tok)
+bid = branches[0]["id"]
+A = f"/api/agenda/{bid}"
+print("     filial:", branches[0]["name"], bid, "| dia do lembrete:", DAY)
+
+created_bookings = []
+
+
+def cleanup_test_data():
+    s, items = call("GET", A + f"/agendamentos?de={RANGE_FROM}&ate={RANGE_TO}", token=tok)
+    phones = set(PHONES.values())
+    for b in items or []:
+        if b["phone"] in phones or b["id"] in created_bookings or b["clientName"] == "Balcão E2E Bot":
+            call("DELETE", A + f"/agendamentos/{b['id']}", token=tok)
+    for phone in phones:
+        s, c = call("GET", A + f"/clientes/{phone}", token=tok)
+        if s == 200 and c and c.get("id"):
+            call("DELETE", A + f"/clientes/{c['id']}", token=tok)
+
+
+s, original_cfg = call("GET", A + "/config", token=tok)
+check("config original lida", s == 200 and original_cfg.get("services"), s)
+
+
+def save_cfg(**bot):
+    cfg = json.loads(json.dumps(original_cfg))
+    cfg["businessName"] = "Estética Teste Bot"
+    cfg["bot"] = {**(cfg.get("bot") or {}), "daysAhead": 7, "sessionTimeoutMin": 30, "maxInvalidAttempts": 3,
+                  "minNoticeMin": 60, "cancelMinHours": 0, "askVehicle": True, "showPrices": True, **bot}
+    cfg["texts"] = {}
+    cfg["vehicleTypes"] = {}
+    for svc in cfg["services"]:
+        if svc["id"] in ("s1", "s2"):
+            svc["active"] = True
+    s, _ = call("PUT", A + "/config", cfg, token=tok)
+    return s
+
+
+try:
+    cleanup_test_data()
+    check("ajustes de teste salvos", save_cfg() == 200)
+
+    def bot(phone, texto=None, opcao=None, nome="Mariana Souza", mid=None, tipo=None):
+        body = {"telefone": phone, "texto": texto, "opcaoId": opcao, "nome": nome, "id": mid, "tipo": tipo}
+        s, p = call("POST", A + "/bot/mensagens", body, token=tok)
+        if s != 200:
+            print("     bot", phone, texto or opcao, "->", s, p)
+            return {"estado": None, "mensagens": []}
+        return p
+
+    def last(r):
+        return r["mensagens"][-1] if r["mensagens"] else {"texto": "", "opcoes": [], "tipo": None}
+
+    def ids(r):
+        return [o["id"] for o in last(r)["opcoes"]]
+
+    sent = []
+
+    def talk(phone, texto=None, opcao=None, **kw):
+        r = bot(phone, texto, opcao, **kw)
+        sent.extend(r["mensagens"])
+        return r
+
+    for phone in PHONES.values():
+        bot(phone, "cancelar")  # sessão limpa (inclusive "com atendente" de uma execução anterior)
+
+    # ---- caminho feliz
+    P = PHONES["feliz"]
+    r = talk(P, "oi, quero marcar uma lavagem")
+    check("saudação com o nome e a lista de serviços", last(r)["tipo"] == "list" and "Mariana" in last(r)["texto"]
+          and ids(r) and all(i.startswith("svc:") for i in ids(r)), last(r))
+    check("estado choosingService", r["estado"] == "choosingService", r["estado"])
+    r = talk(P, opcao="svc:s1")
+    check("pergunta o tipo de veículo", r["estado"] == "choosingVehicleType" and "vt:Hatch" in ids(r), ids(r))
+    r = talk(P, opcao="vt:Hatch")
+    days = ids(r)
+    check("lista de dias com horário", r["estado"] == "choosingDay" and days and days[0].startswith("day:"), days)
+    r = talk(P, opcao=days[0])
+    slots = ids(r)
+    check("lista de horários com navegação", r["estado"] == "choosingSlot" and slots[0].startswith("slot:") and "nav:days" in slots, slots)
+    chosen_day, chosen_slot = days[0][4:], int(slots[0][5:])
+    r = talk(P, opcao=slots[0])
+    check("pergunta modelo e placa", r["estado"] == "askingVehicle", r["estado"])
+    r = talk(P, "Onix prata ABC-1D23")
+    check("resumo com placa e preço", r["estado"] == "confirming" and "ABC1D23" in last(r)["texto"] and "R$" in last(r)["texto"], last(r)["texto"])
+    r = talk(P, opcao="confirm:ok")
+    check("agendado e volta ao início", "Agendado!" in last(r)["texto"] and r["estado"] == "idle", last(r)["texto"])
+    s, day_list = call("GET", A + f"/agendamentos?de={chosen_day}&ate={chosen_day}", token=tok)
+    mine = [b for b in day_list or [] if b["phone"] == P and b["status"] == "scheduled"]
+    b = mine[0] if mine else {}
+    check("agendamento gravado como veio do WhatsApp", len(mine) == 1 and b["origin"] == "whatsapp" and b["start"] == chosen_slot
+          and b["vehicle"] == "Onix prata" and b["plate"] == "ABC1D23" and b["clientName"] == "Mariana Souza", b)
+
+    # ---- opção digitada
+    P = PHONES["digitado"]
+    r = talk(P, "oi")
+    svc_count = len(ids(r))
+    r = talk(P, "1")
+    check("número da opção escolhe o serviço", r["estado"] == "choosingVehicleType", r["estado"])
+    r = talk(P, "sedan")
+    check("nome digitado escolhe o tipo", r["estado"] == "choosingDay", r["estado"])
+    r = talk(P, "1")
+    check("número escolhe o dia", r["estado"] == "choosingSlot", r["estado"])
+    typed = last(r)["opcoes"][1]["titulo"] if len(last(r)["opcoes"]) > 2 else last(r)["opcoes"][0]["titulo"]
+    r = talk(P, typed.replace(":00", "h") if typed.endswith(":00") else typed)
+    check(f"horário digitado ({typed})", r["estado"] == "askingVehicle", f"{r['estado']} {last(r)['texto'][:60]}")
+    r = talk(P, opcao="veh:skip")
+    check("pular o veículo vai para o resumo", r["estado"] == "confirming", r["estado"])
+    talk(P, "cancelar")
+
+    # ---- id repetido (reenvio do webhook)
+    P = PHONES["duplicado"]
+    mid = f"wamid.e2e.{uuid.uuid4().hex}"
+    r1 = bot(P, "oi", mid=mid)
+    r2 = bot(P, "oi", mid=mid)
+    check("mensagem repetida é ignorada", r1["mensagens"] and not r2["mensagens"], f"{len(r1['mensagens'])} / {len(r2['mensagens'])}")
+
+    # ---- entrada inválida e atendente
+    P = PHONES["atendente"]
+    talk(P, "oi")
+    r = talk(P, "blablabla")
+    check("não entendi + repete a lista", len(r["mensagens"]) == 2 and r["mensagens"][0]["tipo"] == "text"
+          and "Não entendi" in r["mensagens"][0]["texto"] and r["mensagens"][1]["tipo"] == "list", r["mensagens"])
+    talk(P, "???")
+    r = talk(P, "não sei")
+    check("3 erros oferecem atendente", ids(r) == ["nav:attendant", "nav:menu"], ids(r))
+    r = talk(P, opcao="nav:attendant")
+    check("com atendente", r["estado"] == "withAttendant", r["estado"])
+    r = talk(P, "alguém aí?")
+    check("bot fica calado com atendente", not r["mensagens"], r["mensagens"])
+    r = talk(P, "menu")
+    check("menu volta para o bot", r["estado"] == "choosingService", r["estado"])
+    talk(P, "cancelar")
+
+    # ---- cancelar no meio
+    P = PHONES["cancela"]
+    talk(P, "oi"); talk(P, opcao="svc:s1"); r = talk(P, opcao="vt:Hatch")
+    r = talk(P, opcao=ids(r)[0]); talk(P, opcao=ids(r)[0]); talk(P, "Gol")
+    r = talk(P, "Cancelar")
+    s, all_b = call("GET", A + f"/agendamentos?de={RANGE_FROM}&ate={RANGE_TO}", token=tok)
+    check("cancelar no meio não agenda nada", r["estado"] == "idle" and not [x for x in all_b if x["phone"] == P], r["estado"])
+
+    # ---- horário ocupado antes de confirmar
+    P = PHONES["conflito"]
+    talk(P, "oi"); talk(P, opcao="svc:s1"); r = talk(P, opcao="vt:Hatch")
+    day_id = ids(r)[0]
+    r = talk(P, opcao=day_id)
+    slot_id = ids(r)[0]
+    talk(P, opcao=slot_id)
+    r = talk(P, "Gol XYZ1A23")
+    check("conflito: chegou ao resumo", r["estado"] == "confirming", r["estado"])
+    # Ocupa todos os boxes do horário escolhido pelo balcão antes do cliente confirmar.
+    start = int(slot_id[5:])
+    for _ in range(10):
+        s, nb = call("POST", A + "/agendamentos", {"date": day_id[4:], "start": start, "boxId": None, "serviceId": "s1",
+                                                  "vehicleType": "Hatch", "vehicle": "Gol", "plate": "", "clientName": "Balcão E2E Bot",
+                                                  "phone": "", "notes": "", "origin": "counter", "reminderOptIn": False}, token=tok)
+        if s != 201:
+            break
+        created_bookings.append(nb["id"])
+    r = talk(P, opcao="confirm:ok")
+    check("horário ocupado: avisa e reenvia a lista", "acabou de ser ocupado" in " ".join(m["texto"] for m in r["mensagens"])
+          and r["estado"] in ("choosingSlot", "choosingDay") and slot_id not in ids(r), f"{r['estado']} {ids(r)[:3]}")
+    talk(P, "cancelar")
+
+    # ---- respostas do lembrete (dono, nono dígito, prazo mínimo, remarcar)
+    P = PHONES["lembrete"]
+    base = {"date": DAY, "start": 600, "boxId": None, "serviceId": "s1", "vehicleType": "SUV", "vehicle": "Compass",
+            "plate": "QWE4F55", "clientName": "Mariana Souza", "phone": P, "notes": "", "origin": "counter", "reminderOptIn": False}
+    s, bk = call("POST", A + "/agendamentos", base, token=tok)
+    check("agendamento do balcão para o lembrete", s == 201, f"{s} {bk}")
+    r = talk(P, opcao=f"conf:{bk['id']}")
+    check("confirmar pelo lembrete", "Confirmado" in last(r)["texto"], last(r)["texto"])
+    r = talk(PHONES["outro"], opcao=f"canc:{bk['id']}")
+    s, same = call("GET", A + f"/agendamentos/{bk['id']}", token=tok)
+    check("outro número não cancela", "Não encontrei" in last(r)["texto"] and same["status"] == "scheduled", last(r)["texto"])
+    no9 = P[:4] + P[5:]
+    r = talk(no9, opcao=f"conf:{bk['id']}")
+    check("wa_id sem o nono dígito é o mesmo dono", "Confirmado" in last(r)["texto"], last(r)["texto"])
+    save_cfg(cancelMinHours=24 * 30)
+    r = talk(P, opcao=f"canc:{bk['id']}")
+    s, same = call("GET", A + f"/agendamentos/{bk['id']}", token=tok)
+    check("dentro do prazo mínimo vai para a equipe", "Faltam menos de" in last(r)["texto"] and ids(r) == ["nav:attendant"]
+          and same["status"] == "scheduled", last(r)["texto"])
+    save_cfg()
+    r = talk(P, opcao=f"canc:{bk['id']}")
+    s, same = call("GET", A + f"/agendamentos/{bk['id']}", token=tok)
+    check("cancelar pelo lembrete libera o horário", "liberado" in last(r)["texto"] and same["status"] == "canceled", last(r)["texto"])
+    r = talk(P, opcao=f"canc:{bk['id']}")
+    check("cancelado de novo: avisa o status", "cancelado" in last(r)["texto"].lower(), last(r)["texto"])
+    s, bk2 = call("POST", A + "/agendamentos", base, token=tok)
+    r = talk(P, opcao=f"rem:{bk2['id']}")
+    s, same = call("GET", A + f"/agendamentos/{bk2['id']}", token=tok)
+    check("remarcar: antigo continua reservado", r["estado"] == "choosingDay" and same["status"] == "scheduled", r["estado"])
+    r = talk(P, opcao=f"day:{DAY}")
+    new_slot = next((i for i in ids(r) if i.startswith("slot:") and i != "slot:600"), None)
+    r = talk(P, opcao=new_slot)
+    check("remarcar não pergunta o veículo de novo", r["estado"] == "confirming" and "Novo horário" in last(r)["texto"], r["estado"])
+    r = talk(P, opcao="confirm:ok")
+    s, day_list = call("GET", A + f"/agendamentos?de={DAY}&ate={DAY}", token=tok)
+    old = next((x for x in day_list if x["id"] == bk2["id"]), {})
+    new = next((x for x in day_list if x.get("rescheduledFrom") == bk2["id"]), {})
+    check("remarcado: antigo cancelado, novo com o mesmo veículo", "Remarcado" in last(r)["texto"] and old.get("status") == "canceled"
+          and new.get("start") == int(new_slot[5:]) and new.get("vehicle") == "Compass" and new.get("vehicleType") == "SUV",
+          f"{last(r)['texto'][:40]} {old.get('status')} {new}")
+
+    # ---- parar e voltar lembretes
+    P = PHONES["optout"]
+    r = talk(P, "parar lembretes")
+    s, c = call("GET", A + f"/clientes/{P}", token=tok)
+    check("parar lembretes grava o opt-out", "não vai mais receber" in last(r)["texto"] and s == 200 and c["reminderOptIn"] is False, f"{s} {c}")
+    r = talk(P, "quero lembretes")
+    s, c = call("GET", A + f"/clientes/{P}", token=tok)
+    check("quero lembretes volta o opt-in", c["reminderOptIn"] is True, c)
+
+    # ---- tipo que o bot não entende
+    r = talk(PHONES["audio"], tipo="audio")
+    check("áudio: só entendo texto", "só entendo texto" in last(r)["texto"], last(r)["texto"])
+
+    # ---- limites da Cloud API em tudo que saiu
+    problems = []
+    for m in sent:
+        if m["tipo"] == "list":
+            if len(m["opcoes"]) > 10 or len(m["texto"]) > 1024 or len(m["botao"] or "") > 20:
+                problems.append(("list", len(m["opcoes"]), m["texto"][:30]))
+            problems += [("row", o["titulo"]) for o in m["opcoes"] if len(o["titulo"]) > 24 or len(o["descricao"] or "") > 72]
+        if m["tipo"] == "buttons":
+            if len(m["opcoes"]) > 3 or len(m["texto"]) > 1024:
+                problems.append(("buttons", m["texto"][:30]))
+            problems += [("button", o["titulo"]) for o in m["opcoes"] if len(o["titulo"]) > 20]
+        if m["tipo"] == "text" and len(m["texto"]) > 4096:
+            problems.append(("text", len(m["texto"])))
+    check(f"{len(sent)} mensagens dentro dos limites da Cloud API", not problems, problems[:5])
+
+    # ---- modelo do lembrete para a Meta
+    s, tpl = call("GET", A + "/bot/modelo-lembrete", token=tok)
+    check("modelo do lembrete no formato da Meta", s == 200 and "{{1}}" in tpl["texto"] and tpl["botoes"] == ["Confirmar", "Remarcar", "Cancelar"]
+          and tpl["categoria"] == "UTILITY" and "{" not in tpl["previa"], tpl)
+
+    # ---- webhook
+    sec = user_secrets()
+    app_secret = os.environ.get("WHATSAPP_APP_SECRET") or sec.get("WhatsApp:AppSecret", "")
+    verify = os.environ.get("WHATSAPP_VERIFY_TOKEN") or sec.get("WhatsApp:VerifyToken", "")
+    number_id = os.environ.get("WHATSAPP_PHONE_NUMBER_ID") or sec.get("WhatsApp:Numbers:0:PhoneNumberId", "")
+    if not (app_secret and verify and number_id):
+        check("segredos do webhook configurados (AppSecret, VerifyToken, Numbers:0)", False, "configure os user-secrets")
+    else:
+        W = "/api/whatsapp/webhook"
+        q = urllib.parse.urlencode({"hub.mode": "subscribe", "hub.verify_token": verify, "hub.challenge": "1158201444"})
+        s, p = raw("GET", f"{W}?{q}")
+        check("verificação devolve o challenge", s == 200 and str(p) == "1158201444", f"{s} {p}")
+        q = urllib.parse.urlencode({"hub.mode": "subscribe", "hub.verify_token": "errado", "hub.challenge": "1"})
+        s, _ = raw("GET", f"{W}?{q}")
+        check("verificação com token errado = 403", s == 403, s)
+
+        def envelope(value, pnid=None):
+            return {"object": "whatsapp_business_account", "entry": [{"id": "WABA", "changes": [{"field": "messages", "value": {
+                "messaging_product": "whatsapp", "metadata": {"display_phone_number": "551400000000", "phone_number_id": pnid or number_id},
+                **value}}]}]}
+
+        def message(phone, wam, **kind):
+            return envelope({"contacts": [{"profile": {"name": "Paulo Webhook"}, "wa_id": phone}],
+                             "messages": [{"from": phone, "id": wam, "timestamp": str(int(time.time())), **kind}]})
+
+        def post(payload, signed=True, secret=None):
+            body = json.dumps(payload).encode()
+            headers = {"Content-Type": "application/json"}
+            if signed:
+                sig = hmac.new((secret or app_secret).encode(), body, hashlib.sha256).hexdigest()
+                headers["X-Hub-Signature-256"] = "sha256=" + sig
+            return raw("POST", W, body, headers)[0]
+
+        def wait_conversation(phone, cond, seconds=30):
+            end = time.time() + seconds
+            conv = None
+            while time.time() < end:
+                s, conv = call("GET", A + f"/bot/conversas/{phone}", token=tok)
+                if s == 200 and cond(conv):
+                    return conv
+                time.sleep(0.5)
+            return conv
+
+        def after(conv, wam_id):
+            """Mensagens a partir da entrada com esse id (a conversa traz também o reset do início)."""
+            msgs = conv["mensagens"] if conv else []
+            i = next((k for k, m in enumerate(msgs) if m["wamId"] == wam_id), None)
+            return [] if i is None else msgs[i:]
+
+        P = PHONES["webhook"]
+        wid = f"wamid.e2e.{uuid.uuid4().hex}"
+        payload = message(P, wid, type="text", text={"body": "oi"})
+        check("webhook sem assinatura = 401", post(payload, signed=False) == 401)
+        check("webhook com assinatura errada = 401", post(payload, secret="outra-chave") == 401)
+        check("webhook assinado = 200", post(payload) == 200)
+        check("reenvio do mesmo id = 200", post(payload) == 200)
+        conv = wait_conversation(P, lambda c: any(m["direcao"] == "out" for m in after(c, wid)) and c["estado"] == "choosingService")
+        tail = after(conv, wid)
+        check("webhook processado uma vez só", len([m for m in tail if m["direcao"] == "in"]) == 1
+              and conv["estado"] == "choosingService", tail)
+        time.sleep(2)
+        tail = after(wait_conversation(P, lambda c: True), wid)
+        check("o reenvio não gerou outra resposta", len([m for m in tail if m["direcao"] == "out"]) == 1, tail)
+        check("webhook de lista: escolha volta como opção", post(message(P, f"wamid.e2e.{uuid.uuid4().hex}", type="interactive",
+              interactive={"type": "list_reply", "list_reply": {"id": "svc:s1", "title": "x"}})) == 200)
+        conv = wait_conversation(P, lambda c: c["estado"] == "choosingVehicleType")
+        check("lista pelo webhook anda o fluxo", conv and conv["estado"] == "choosingVehicleType", conv and conv["estado"])
+        bot(P, "cancelar")
+
+        P = PHONES["desconhecido"]
+        uid = f"wamid.e2e.{uuid.uuid4().hex}"
+        unknown = message(P, uid, type="text", text={"body": "oi"})
+        unknown["entry"][0]["changes"][0]["value"]["metadata"]["phone_number_id"] = "000000000000000"
+        check("número sem filial = 200", post(unknown) == 200)
+        time.sleep(3)
+        s, conv = call("GET", A + f"/bot/conversas/{P}", token=tok)
+        check("número sem filial é ignorado", s == 200 and not after(conv, uid), conv)
+        bot(P, "cancelar")
+
+        # lembrete enviado pelo template e status de entrega
+        P = PHONES["entrega"]
+        s, rb = call("POST", A + "/agendamentos", {**base, "phone": P, "start": 540, "reminderOptIn": True, "clientName": "Elisa Entrega"}, token=tok)
+        check("agendamento com lembrete", s == 201, f"{s} {rb}")
+        s, rems = call("GET", A + f"/lembretes?de={DAY}&ate={DAY}", token=tok)
+        rem = next((x for x in rems or [] if x["bookingId"] == rb.get("id")), None)
+        s, disp = call("POST", A + "/lembretes/processar", {"ate": DISPATCH_UNTIL, "ids": [rem["id"]] if rem else []}, token=tok)
+        sent_rem = (disp or [{}])[0].get("reminder", {}) if s == 200 else {}
+        wam = sent_rem.get("wamId")
+        check("lembrete enviado pelo template", s == 200 and sent_rem.get("status") == "sent" and wam, f"{s} {disp}")
+        conv = wait_conversation(P, lambda c: any(m["wamId"] == wam for m in c["mensagens"]), 5)
+        tmsg = next((m for m in conv["mensagens"] if m["wamId"] == wam), None) if conv else None
+        check("template registrado na conversa com a prévia", tmsg and tmsg["wamId"] == wam and "Elisa" in tmsg["texto"], tmsg)
+
+        def status(st, err=None):
+            item = {"id": wam, "status": st, "timestamp": str(int(time.time())), "recipient_id": P}
+            if err:
+                item["errors"] = [{"code": 131026, "title": "Message undeliverable"}]
+            return envelope({"statuses": [item]})
+
+        def reminder_status(expected, seconds=20):
+            end = time.time() + seconds
+            cur = None
+            while time.time() < end:
+                s, rems = call("GET", A + f"/lembretes?de={DAY}&ate={DAY}", token=tok)
+                cur = next((x for x in rems or [] if x["id"] == rem["id"]), {})
+                if cur.get("status") == expected:
+                    return cur
+                time.sleep(0.5)
+            return cur
+
+        check("status sent é aceito", post(status("sent")) == 200)
+        check("status delivered", post(status("delivered")) == 200 and reminder_status("delivered").get("status") == "delivered")
+        check("status read", post(status("read")) == 200 and reminder_status("read").get("status") == "read")
+        post(status("delivered"))
+        time.sleep(1.5)
+        check("status não volta (read → delivered ignorado)", reminder_status("read", 2).get("status") == "read")
+
+        bid_ = f"wamid.e2e.{uuid.uuid4().hex}"
+        r_payload = message(P, bid_, type="button", button={"payload": f"conf:{rb['id']}", "text": "Confirmar"})
+        check("botão do template pelo webhook = 200", post(r_payload) == 200)
+        conv = wait_conversation(P, lambda c: any("Confirmado" in m["texto"] for m in after(c, bid_)))
+        check("botão do template confirma o horário", any("Confirmado" in m["texto"] for m in after(conv, bid_)), after(conv, bid_))
+        end = time.time() + 10
+        cur = {}
+        while time.time() < end:
+            s, rems = call("GET", A + f"/lembretes?de={DAY}&ate={DAY}", token=tok)
+            cur = next((x for x in rems or [] if x["id"] == rem["id"]), {})
+            if cur.get("answer"):
+                break
+            time.sleep(0.5)
+        check("resposta registrada no lembrete", cur.get("answer") == "confirmed", cur)
+finally:
+    cleanup_test_data()
+    s, _ = call("PUT", A + "/config", original_cfg, token=tok)
+    check("ajustes originais devolvidos", s == 200, s)
+
+ok = sum(1 for _, x in results if x)
+print(f"\n{ok}/{len(results)} verificações OK")
+sys.exit(0 if ok == len(results) else 1)

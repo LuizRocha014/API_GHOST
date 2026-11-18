@@ -2,6 +2,8 @@ using Application.Abstractions;
 using Infrastructure.Agenda;
 using Infrastructure.Persistence;
 using Infrastructure.Security;
+using Infrastructure.WhatsApp;
+using Application.Bot;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -32,7 +34,16 @@ public static class DependencyInjection
         // Agenda da estética
         services.AddScoped<IAgendaRepository, AgendaRepository>();
         services.AddSingleton<IAgendaClock, AgendaClock>();
-        services.AddScoped<IReminderSender, LocalReminderSender>();
+
+        // Bot e WhatsApp: modo Log (padrão) não envia nada para a Meta; Cloud usa a WhatsApp Cloud API.
+        services.Configure<WhatsAppOptions>(configuration.GetSection(WhatsAppOptions.SectionName));
+        services.AddSingleton<IBotStore, BotStore>();
+        var whatsApp = configuration.GetSection(WhatsAppOptions.SectionName).Get<WhatsAppOptions>() ?? new WhatsAppOptions();
+        if (whatsApp.IsCloud)
+            services.AddSingleton<IMessagingChannel, CloudMessagingChannel>();
+        else
+            services.AddSingleton<IMessagingChannel, LogMessagingChannel>();
+        services.AddScoped<IReminderSender, WhatsAppReminderSender>();
         return services;
     }
 }

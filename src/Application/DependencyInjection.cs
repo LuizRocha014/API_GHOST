@@ -1,6 +1,7 @@
 using Application.Accesses;
 using Application.Agenda;
 using Application.Auth;
+using Application.Bot;
 using Application.Branches;
 using Application.Companies;
 using Application.Inventory;
@@ -28,6 +29,7 @@ public static class DependencyInjection
         services.AddScoped<IProductBatchService, ProductBatchService>();
         services.AddScoped<IUserBranchAccessService, UserBranchAccessService>();
         services.AddScoped<IAgendaService, AgendaService>();
+        services.AddScoped<BookingFlow>();
         return services;
     }
 }

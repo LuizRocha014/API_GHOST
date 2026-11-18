@@ -5,6 +5,7 @@ using Application;
 using Application.Abstractions;
 using Infrastructure;
 using Infrastructure.Persistence;
+using Infrastructure.WhatsApp;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
@@ -15,7 +16,10 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection(JwtOptions.SectionName));
 
 var jwtSection = builder.Configuration.GetSection(JwtOptions.SectionName);
-var jwtKey = jwtSection["Key"] ?? throw new InvalidOperationException("Jwt:Key não configurado.");
+var jwtKey = jwtSection["Key"];
+if (string.IsNullOrWhiteSpace(jwtKey) || Encoding.UTF8.GetByteCount(jwtKey) < 32)
+    throw new InvalidOperationException(
+        "Jwt:Key não configurado (mínimo 32 caracteres). Defina com: dotnet user-secrets set \"Jwt:Key\" \"<segredo longo>\" --project src/Api, ou pela variável Jwt__Key.");
 var jwtIssuer = jwtSection["Issuer"] ?? "API_GHOST";
 var jwtAudience = jwtSection["Audience"] ?? "API_GHOST";
 
@@ -99,9 +103,17 @@ builder.Services.AddCors(options => options.AddPolicy(CorsPolicy, policy =>
 if (builder.Configuration.GetValue("Agenda:ReminderWorker:Enabled", true))
     builder.Services.AddHostedService<ReminderWorker>();
 
+// Bot do WhatsApp: o webhook enfileira, o worker processa (e apaga a conversa fora da retenção).
+builder.Services.AddSingleton<BotQueue>();
+builder.Services.AddHostedService<BotWorker>();
+
 var app = builder.Build();
 
 app.Logger.LogInformation("Banco: {Database}", DatabaseConnection.Describe(app.Configuration));
+var whatsApp = app.Configuration.GetSection(WhatsAppOptions.SectionName).Get<WhatsAppOptions>() ?? new WhatsAppOptions();
+app.Logger.LogInformation(
+    "WhatsApp: modo {Mode}, {Numbers} número(s), assinatura do webhook {Signature}.",
+    whatsApp.IsCloud ? "Cloud" : "Log", whatsApp.Numbers.Count, whatsApp.AppSecret.Length > 0 ? "conferida" : "NÃO conferida");
 
 await using (var scope = app.Services.CreateAsyncScope())
 {
