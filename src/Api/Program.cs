@@ -139,6 +139,7 @@ if (builder.Configuration.GetValue("Agenda:ReminderWorker:Enabled", true))
     builder.Services.AddHostedService<ReminderWorker>();
     builder.Services.AddHostedService<PlanBillingWorker>();
     builder.Services.AddHostedService<WaitlistWorker>();
+    builder.Services.AddHostedService<ParkingWorker>();
 }
 
 // Bot do WhatsApp: o webhook grava na fila do banco e toca a campainha; o worker processa (e apaga a conversa fora da retenção).

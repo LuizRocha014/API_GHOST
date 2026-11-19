@@ -125,6 +125,9 @@ pede endereço e preços; a equipe responde pela caixa de entrada (`api/agenda/{
 - **Planos de fidelidade:** mensalidade com dia de vencimento, tolerância, suspensão e aviso pelo WhatsApp.
 - **Agendamento recorrente:** `agendamentos/serie` (toda semana, a cada 2 semanas, todo mês) e `cancelar-serie`.
 - **Lista de espera, avaliação e lembrete de novo:** ver [`docs/whatsapp-bot.md`](docs/whatsapp-bot.md).
+- **Estacionamento rotativo e câmeras:** câmeras IP e canais de DVR (imagem ao vivo pela API, busca na rede por ONVIF e
+  portas), leitura de placa (câmera com LPR, leitura na nuvem ou digitada), mensalistas, tickets com tabela e pátio. Ver
+  [`docs/estacionamento.md`](docs/estacionamento.md).
 - **App web na mesma API:** com `Web:Path` apontando para o build web do app, a API serve o site na raiz.
 - **Publicação e backup:** [`docs/deploy.md`](docs/deploy.md) (Docker com HTTPS, Azure ou PC com Cloudflare Tunnel).
 
@@ -150,7 +153,8 @@ catálogo (continua no agendamento, na edição e na remarcação como foi marca
 Outras suítes, todas contra o banco de verdade e devolvendo os ajustes originais: `equipe_e2e.py` (perfis, senha,
 bloqueio, filiais; 46), `tempo_real_e2e.py` (long-poll; 8), `financeiro_e2e.py` (pagamento, histórico, relatório e
 planilha; 28), `mensalidade_e2e.py` (vencimento, tolerância, avisos; 17), `avaliacao_serie_e2e.py` (recorrente,
-avaliação, segundo lembrete; 39), `espera_e2e.py` (lista de espera pelo bot e pelo balcão, aviso e Ver horários; 24) e
+avaliação, segundo lembrete; 39), `espera_e2e.py` (lista de espera pelo bot e pelo balcão, aviso e Ver horários; 24), `estacionamento_e2e.py` (câmeras,
+leituras de placa, mensalistas e tickets, com uma câmera falsa; 37) e
 `fila_reinicio_e2e.ps1` (mensagem do webhook sobrevive a reiniciar a API).
 
 `python infra/e2e/bot_e2e.py` faz o mesmo com o bot do WhatsApp (113 verificações: conversa completa pelo simulador,

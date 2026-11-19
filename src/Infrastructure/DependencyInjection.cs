@@ -48,6 +48,14 @@ public static class DependencyInjection
         services.AddScoped<IReminderSender, WhatsAppReminderSender>();
         services.AddScoped<IPlanNoticeSender, WhatsAppPlanNoticeSender>();
         services.AddScoped<Application.Agenda.IWaitlistNoticeSender, WhatsAppWaitlistNoticeSender>();
+
+        // Estacionamento: câmeras pela rede local, leitura de placa e tickets.
+        services.Configure<Parking.ParkingOptions>(configuration.GetSection(Parking.ParkingOptions.SectionName));
+        services.AddScoped<IParkingRepository, Parking.ParkingRepository>();
+        services.AddSingleton<ICameraClient, Parking.CameraClient>();
+        services.AddSingleton<ICameraDiscovery, Parking.CameraDiscovery>();
+        services.AddSingleton<IPlateReader, Parking.PlateRecognizerReader>();
+        services.AddSingleton<IMotionDetector, Parking.MotionDetector>();
         return services;
     }
 }

@@ -55,6 +55,7 @@ public sealed class AgendaChangePublisher(AgendaChangeFeed feed) : IAsyncActionF
         if (t.Contains("/config")) return [AgendaChangeFeed.Config];
         if (t.Contains("/bloqueios")) return [AgendaChangeFeed.Blocks];
         if (t.Contains("/espera")) return [AgendaChangeFeed.Bookings, AgendaChangeFeed.Inbox];
+        if (t.Contains("/estacionamento")) return [AgendaChangeFeed.Parking];
         if (t.Contains("/lembretes")) return [AgendaChangeFeed.Reminders, AgendaChangeFeed.Inbox];
         if (t.Contains("/clientes") && t.Contains("/planos")) return [AgendaChangeFeed.Clients, AgendaChangeFeed.Plans, AgendaChangeFeed.Bookings];
         if (t.Contains("/planos")) return [AgendaChangeFeed.Plans];

@@ -34,6 +34,7 @@ public static class DependencyInjection
         services.AddScoped<ReportService>();
         services.AddScoped<PlanBillingService>();
         services.AddScoped<WaitlistService>();
+        services.AddScoped<Parking.ParkingService>();
         services.AddSingleton<AgendaChangeFeed>();
         services.AddScoped<BookingFlow>();
         services.AddScoped<BotInboxService>();

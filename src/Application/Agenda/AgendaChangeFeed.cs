@@ -20,7 +20,8 @@ public sealed class AgendaChangeFeed
     public const string Clients = "clients";
     public const string Plans = "plans";
     public const string Inbox = "inbox";
-    public static readonly string[] All = [Config, Bookings, Blocks, Reminders, Clients, Plans, Inbox];
+    public const string Parking = "parking";
+    public static readonly string[] All = [Config, Bookings, Blocks, Reminders, Clients, Plans, Inbox, Parking];
 
     private const int KeepLast = 200;
 

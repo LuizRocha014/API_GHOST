@@ -31,6 +31,11 @@ public sealed class AppDbContext : DbContext
     public DbSet<AgendaAuditEntry> AgendaAudit => Set<AgendaAuditEntry>();
     public DbSet<AgendaPlanNotice> AgendaPlanNotices => Set<AgendaPlanNotice>();
     public DbSet<AgendaWaitlistEntry> AgendaWaitlist => Set<AgendaWaitlistEntry>();
+    public DbSet<ParkingCamera> ParkingCameras => Set<ParkingCamera>();
+    public DbSet<ParkingMonthly> ParkingMonthlies => Set<ParkingMonthly>();
+    public DbSet<ParkingTicket> ParkingTickets => Set<ParkingTicket>();
+    public DbSet<ParkingReading> ParkingReadings => Set<ParkingReading>();
+    public DbSet<ParkingSettingsRow> ParkingSettings => Set<ParkingSettingsRow>();
     public DbSet<AgendaBlock> AgendaBlocks => Set<AgendaBlock>();
     public DbSet<AgendaClient> AgendaClients => Set<AgendaClient>();
     public DbSet<AgendaClientVehicle> AgendaClientVehicles => Set<AgendaClientVehicle>();
@@ -284,6 +289,90 @@ public sealed class AppDbContext : DbContext
             e.Property(x => x.Error).HasMaxLength(1000);
             e.Property(x => x.CreatedAt).HasColumnType("datetime2");
             e.HasIndex(x => new { x.ClientPlanId, x.Month, x.Type }).IsUnique();
+            e.HasOne<Branch>().WithMany().HasForeignKey(x => x.BranchId).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<ParkingCamera>(e =>
+        {
+            e.ToTable("ParkingCameras");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Name).HasMaxLength(120);
+            e.Property(x => x.Kind).HasMaxLength(8);
+            e.Property(x => x.Brand).HasMaxLength(16);
+            e.Property(x => x.Host).HasMaxLength(255);
+            e.Property(x => x.Username).HasMaxLength(120);
+            e.Property(x => x.Password).HasMaxLength(255);
+            e.Property(x => x.SnapshotUrl).HasMaxLength(1000);
+            e.Property(x => x.RtspUrl).HasMaxLength(1000);
+            e.Property(x => x.Role).HasMaxLength(8);
+            e.Property(x => x.IngestToken).HasMaxLength(64);
+            e.Property(x => x.LastError).HasMaxLength(500);
+            e.Property(x => x.LastSeenAt).HasColumnType("datetime2");
+            e.Property(x => x.CreatedAt).HasColumnType("datetime2");
+            e.Property(x => x.UpdatedAt).HasColumnType("datetime2");
+            e.HasIndex(x => x.IngestToken).IsUnique();
+            e.HasIndex(x => x.BranchId);
+            e.HasOne<Branch>().WithMany().HasForeignKey(x => x.BranchId).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<ParkingMonthly>(e =>
+        {
+            e.ToTable("ParkingMonthlies");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Plate).HasMaxLength(10);
+            e.Property(x => x.Name).HasMaxLength(200);
+            e.Property(x => x.Phone).HasMaxLength(20);
+            e.Property(x => x.Vehicle).HasMaxLength(120);
+            e.Property(x => x.Notes).HasMaxLength(1000);
+            e.Property(x => x.MonthlyFee).HasPrecision(12, 2);
+            e.Property(x => x.ValidUntil).HasColumnType("date");
+            e.Property(x => x.CreatedAt).HasColumnType("datetime2");
+            e.Property(x => x.UpdatedAt).HasColumnType("datetime2");
+            e.HasIndex(x => new { x.BranchId, x.Plate }).IsUnique();
+            e.HasOne<Branch>().WithMany().HasForeignKey(x => x.BranchId).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<ParkingTicket>(e =>
+        {
+            e.ToTable("ParkingTickets");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Plate).HasMaxLength(10);
+            e.Property(x => x.Vehicle).HasMaxLength(120);
+            e.Property(x => x.Status).HasMaxLength(10);
+            e.Property(x => x.PaymentMethod).HasMaxLength(10);
+            e.Property(x => x.Notes).HasMaxLength(500);
+            e.Property(x => x.Amount).HasPrecision(12, 2);
+            e.Property(x => x.PaidAmount).HasPrecision(12, 2);
+            e.Property(x => x.EntryAt).HasColumnType("datetime2");
+            e.Property(x => x.ExitAt).HasColumnType("datetime2");
+            e.Property(x => x.PaidAt).HasColumnType("datetime2");
+            e.Property(x => x.CreatedAt).HasColumnType("datetime2");
+            e.Property(x => x.UpdatedAt).HasColumnType("datetime2");
+            e.HasIndex(x => new { x.BranchId, x.Number }).IsUnique();
+            e.HasIndex(x => new { x.BranchId, x.Plate, x.Status });
+            e.HasOne<Branch>().WithMany().HasForeignKey(x => x.BranchId).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<ParkingReading>(e =>
+        {
+            e.ToTable("ParkingReadings");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Plate).HasMaxLength(20);
+            e.Property(x => x.Confidence).HasPrecision(5, 4);
+            e.Property(x => x.Source).HasMaxLength(8);
+            e.Property(x => x.Direction).HasMaxLength(8);
+            e.Property(x => x.Result).HasMaxLength(20);
+            e.Property(x => x.At).HasColumnType("datetime2");
+            e.HasIndex(x => new { x.BranchId, x.At });
+            e.HasIndex(x => new { x.BranchId, x.CameraId, x.Plate });
+            e.HasOne<Branch>().WithMany().HasForeignKey(x => x.BranchId).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<ParkingSettingsRow>(e =>
+        {
+            e.ToTable("ParkingSettings");
+            e.HasKey(x => x.BranchId);
+            e.Property(x => x.UpdatedAt).HasColumnType("datetime2");
             e.HasOne<Branch>().WithMany().HasForeignKey(x => x.BranchId).OnDelete(DeleteBehavior.Restrict);
         });
 
